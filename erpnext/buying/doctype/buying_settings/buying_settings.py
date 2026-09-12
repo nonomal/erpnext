@@ -18,6 +18,7 @@ class BuyingSettings(Document):
 		from frappe.types import DF
 
 		allow_multiple_items: DF.Check
+		allow_negative_rates_for_items: DF.Check
 		allow_zero_qty_in_purchase_order: DF.Check
 		allow_zero_qty_in_request_for_quotation: DF.Check
 		allow_zero_qty_in_supplier_quotation: DF.Check
@@ -30,8 +31,10 @@ class BuyingSettings(Document):
 		blanket_order_allowance: DF.Float
 		buying_price_list: DF.Link | None
 		disable_last_purchase_rate: DF.Check
+		fixed_email: DF.Link | None
 		maintain_same_rate: DF.Check
 		maintain_same_rate_action: DF.Literal["Stop", "Warn"]
+		over_order_allowance: DF.Float
 		over_transfer_allowance: DF.Float
 		po_required: DF.Literal["No", "Yes"]
 		pr_required: DF.Literal["No", "Yes"]
@@ -43,11 +46,21 @@ class BuyingSettings(Document):
 		supp_master_name: DF.Literal["Supplier Name", "Naming Series", "Auto Name"]
 		supplier_group: DF.Link | None
 		use_transaction_date_exchange_rate: DF.Check
+		validate_consumed_qty: DF.Check
 	# end: auto-generated types
 
 	def validate(self):
 		for key in ["supplier_group", "supp_master_name", "maintain_same_rate", "buying_price_list"]:
 			frappe.db.set_default(key, self.get(key, ""))
+
+		self.update_supplier_naming_settings()
+
+		if not self.bill_for_rejected_quantity_in_purchase_invoice:
+			self.set_valuation_rate_for_rejected_materials = 0
+
+	def update_supplier_naming_settings(self):
+		if not self.has_value_changed("supp_master_name"):
+			return
 
 		from erpnext.utilities.naming import set_by_naming_series
 
@@ -57,9 +70,6 @@ class BuyingSettings(Document):
 			self.get("supp_master_name") == "Naming Series",
 			hide_name_field=False,
 		)
-
-		if not self.bill_for_rejected_quantity_in_purchase_invoice:
-			self.set_valuation_rate_for_rejected_materials = 0
 
 	def before_save(self):
 		self.check_maintain_same_rate()

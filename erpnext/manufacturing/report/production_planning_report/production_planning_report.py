@@ -4,6 +4,7 @@
 
 import frappe
 from frappe import _
+from frappe.query_builder.functions import Min, Sum
 from pypika import Order
 
 from erpnext.stock.doctype.warehouse.warehouse import get_child_warehouses
@@ -113,6 +114,13 @@ class ProductionPlanReport:
 		self.orders = query.run(as_dict=True)
 
 	def get_raw_materials(self):
+		"""Retrieve raw materials and source warehouses for production orders.
+
+		This method collects BOM or Work Order items depending on the selected
+		filter and updates `self.raw_materials_dict`, `self.warehouses`,
+		and `self.item_codes` accordingly.
+		"""
+
 		if not self.orders:
 			return
 		self.warehouses = [d.warehouse for d in self.orders]
@@ -135,7 +143,7 @@ class ProductionPlanReport:
 				)
 				or []
 			)
-			self.warehouses.extend([d.source_warehouse for d in raw_materials])
+			self.warehouses.extend([d.warehouse for d in raw_materials])
 
 		else:
 			bom_nos = []
@@ -221,16 +229,27 @@ class ProductionPlanReport:
 
 		self.purchase_details = {}
 
-		purchased_items = frappe.get_all(
-			"Purchase Order Item",
-			fields=["item_code", "min(schedule_date) as arrival_date", "qty as arrival_qty", "warehouse"],
-			filters={
-				"item_code": ("in", self.item_codes),
-				"warehouse": ("in", self.warehouses),
-				"docstatus": 1,
-			},
-			group_by="item_code, warehouse",
-		)
+		po = frappe.qb.DocType("Purchase Order")
+		poi = frappe.qb.DocType("Purchase Order Item")
+		purchased_items = (
+			frappe.qb.from_(po)
+			.join(poi)
+			.on(poi.parent == po.name)
+			.select(
+				poi.item_code,
+				Min(poi.schedule_date).as_("arrival_date"),
+				Sum(poi.qty - poi.received_qty).as_("arrival_qty"),
+				poi.warehouse,
+			)
+			.where(
+				(poi.item_code.isin(self.item_codes))
+				& (poi.warehouse.isin(self.warehouses))
+				& (po.docstatus == 1)
+				& (po.status.notin(["Closed", "Completed", "Cancelled"]))
+				& (poi.qty > poi.received_qty)
+			)
+			.groupby(poi.item_code, poi.warehouse)
+		).run(as_dict=True)
 		for d in purchased_items:
 			key = (d.item_code, d.warehouse)
 			if key not in self.purchase_details:

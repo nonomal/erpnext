@@ -7,22 +7,16 @@ import os
 from pathlib import Path
 
 import frappe
+from frappe import N_ as _
 from frappe.desk.doctype.global_search_settings.global_search_settings import (
 	update_global_search_doctypes,
 )
 from frappe.desk.page.setup_wizard.setup_wizard import make_records
 from frappe.utils import cstr, getdate
+from frappe.utils.nestedset import get_root_of
 
 from erpnext.accounts.doctype.account.account import RootNotEditable
 from erpnext.regional.address_template.setup import set_up_address_templates
-
-
-def _(x, *args, **kwargs):
-	"""Redefine the translation function to return the string as is.
-
-	We want to create english records but still mark the strings as translatable.
-	The respective DocTypes have 'Translate Link Fields' enabled."""
-	return x
 
 
 def read_lines(filename: str) -> list[str]:
@@ -30,47 +24,49 @@ def read_lines(filename: str) -> list[str]:
 	return (Path(__file__).parent.parent / "data" / filename).read_text().splitlines()
 
 
-def install(country=None):
+def get_preset_records(country=None):
+	root_item_group = get_root_of("Item Group") or _("All Item Groups")
 	records = [
 		# ensure at least an empty Address Template exists for this Country
 		{"doctype": "Address Template", "country": country},
 		# item group
 		{
 			"doctype": "Item Group",
-			"item_group_name": _("All Item Groups"),
+			"item_group_name": root_item_group,
 			"is_group": 1,
 			"parent_item_group": "",
+			"__condition": lambda: not frappe.db.exists("Item Group", root_item_group),
 		},
 		{
 			"doctype": "Item Group",
 			"item_group_name": _("Products"),
 			"is_group": 0,
-			"parent_item_group": _("All Item Groups"),
+			"parent_item_group": root_item_group,
 			"show_in_website": 1,
 		},
 		{
 			"doctype": "Item Group",
 			"item_group_name": _("Raw Material"),
 			"is_group": 0,
-			"parent_item_group": _("All Item Groups"),
+			"parent_item_group": root_item_group,
 		},
 		{
 			"doctype": "Item Group",
 			"item_group_name": _("Services"),
 			"is_group": 0,
-			"parent_item_group": _("All Item Groups"),
+			"parent_item_group": root_item_group,
 		},
 		{
 			"doctype": "Item Group",
 			"item_group_name": _("Sub Assemblies"),
 			"is_group": 0,
-			"parent_item_group": _("All Item Groups"),
+			"parent_item_group": root_item_group,
 		},
 		{
 			"doctype": "Item Group",
 			"item_group_name": _("Consumable"),
 			"is_group": 0,
-			"parent_item_group": _("All Item Groups"),
+			"parent_item_group": root_item_group,
 		},
 		# Stock Entry Type
 		{
@@ -103,6 +99,12 @@ def install(country=None):
 			"purpose": "Repack",
 			"is_standard": 1,
 		},
+		{
+			"doctype": "Stock Entry Type",
+			"name": _("Batch Split"),
+			"purpose": "Repack",
+			"batch_split": 1,
+		},
 		{"doctype": "Stock Entry Type", "name": "Disassemble", "purpose": "Disassemble", "is_standard": 1},
 		{
 			"doctype": "Stock Entry Type",
@@ -120,6 +122,30 @@ def install(country=None):
 			"doctype": "Stock Entry Type",
 			"name": _("Material Consumption for Manufacture"),
 			"purpose": "Material Consumption for Manufacture",
+			"is_standard": 1,
+		},
+		{
+			"doctype": "Stock Entry Type",
+			"name": _("Receive from Customer"),
+			"purpose": "Receive from Customer",
+			"is_standard": 1,
+		},
+		{
+			"doctype": "Stock Entry Type",
+			"name": _("Return Raw Material to Customer"),
+			"purpose": "Return Raw Material to Customer",
+			"is_standard": 1,
+		},
+		{
+			"doctype": "Stock Entry Type",
+			"name": _("Subcontracting Delivery"),
+			"purpose": "Subcontracting Delivery",
+			"is_standard": 1,
+		},
+		{
+			"doctype": "Stock Entry Type",
+			"name": _("Subcontracting Return"),
+			"purpose": "Subcontracting Return",
 			"is_standard": 1,
 		},
 		# territory: with two default territories, one for home country and one named Rest of the World
@@ -294,7 +320,16 @@ def install(country=None):
 		{"doctype": "Market Segment", "market_segment": _("Upper Income")},
 		# Warehouse Type
 		{"doctype": "Warehouse Type", "name": "Transit"},
+		{"doctype": "Workstation Operating Component", "component_name": _("Electricity")},
+		{"doctype": "Workstation Operating Component", "component_name": _("Consumables")},
+		{"doctype": "Workstation Operating Component", "component_name": _("Rent")},
+		{"doctype": "Workstation Operating Component", "component_name": _("Wages")},
 	]
+	return records
+
+
+def install(country=None):
+	records = get_preset_records(country)
 
 	for doctype, title_field, filename in (
 		("Designation", "designation_name", "designation.txt"),
@@ -364,10 +399,13 @@ def add_uom_data():
 		open(frappe.get_app_path("erpnext", "setup", "setup_wizard", "data", "uom_data.json")).read()
 	)
 	for d in uoms:
+		if d.get("category") and not frappe.db.exists("UOM Category", d.get("category")):
+			frappe.get_doc({"doctype": "UOM Category", "category_name": d.get("category")}).db_insert()
+
 		if not frappe.db.exists("UOM", d.get("uom_name")):
 			doc = frappe.new_doc("UOM")
 			doc.update(d)
-			doc.save()
+			doc.insert(ignore_permissions=True)
 
 	# bootstrap uom conversion factors
 	uom_conversions = json.loads(
@@ -376,9 +414,6 @@ def add_uom_data():
 		).read()
 	)
 	for d in uom_conversions:
-		if not frappe.db.exists("UOM Category", d.get("category")):
-			frappe.get_doc({"doctype": "UOM Category", "category_name": d.get("category")}).db_insert()
-
 		if not frappe.db.exists(
 			"UOM Conversion Factor",
 			{"from_uom": d.get("from_uom"), "to_uom": d.get("to_uom")},
@@ -405,9 +440,9 @@ def add_market_segments():
 	make_records(records)
 
 
-def add_sale_stages():
+def get_sale_stages():
 	# Sale Stages
-	records = [
+	return [
 		{"doctype": "Sales Stage", "stage_name": _("Prospecting")},
 		{"doctype": "Sales Stage", "stage_name": _("Qualification")},
 		{"doctype": "Sales Stage", "stage_name": _("Needs Analysis")},
@@ -417,6 +452,10 @@ def add_sale_stages():
 		{"doctype": "Sales Stage", "stage_name": _("Proposal/Price Quote")},
 		{"doctype": "Sales Stage", "stage_name": _("Negotiation/Review")},
 	]
+
+
+def add_sale_stages():
+	records = get_sale_stages()
 	for sales_stage in records:
 		frappe.get_doc(sales_stage).db_insert()
 
@@ -481,14 +520,19 @@ def install_defaults(args=None):  # nosemgrep
 	create_bank_account(args)
 
 
-def set_global_defaults(args):
+def set_global_defaults(kwargs):
 	global_defaults = frappe.get_doc("Global Defaults", "Global Defaults")
+	company = frappe.db.get_value(
+		"Company",
+		{"company_name": kwargs.get("company_name")},
+		"name",
+	)
 
 	global_defaults.update(
 		{
-			"default_currency": args.get("currency"),
-			"default_company": args.get("company_name"),
-			"country": args.get("country"),
+			"default_currency": kwargs.get("currency"),
+			"default_company": company,
+			"country": kwargs.get("country"),
 		}
 	)
 
@@ -499,18 +543,20 @@ def update_stock_settings():
 	stock_settings = frappe.get_doc("Stock Settings")
 	stock_settings.item_naming_by = "Item Code"
 	stock_settings.valuation_method = "FIFO"
-	stock_settings.default_warehouse = frappe.db.get_value("Warehouse", {"warehouse_name": _("Stores")})
 	stock_settings.stock_uom = "Nos"
 	stock_settings.auto_indent = 1
 	stock_settings.auto_insert_price_list_rate_if_missing = 1
 	stock_settings.update_price_list_based_on = "Rate"
 	stock_settings.set_qty_in_transactions_based_on_serial_no_input = 1
+	stock_settings.flags.ignore_permissions = True
 	stock_settings.save()
 
 
-def create_bank_account(args):
+def create_bank_account(args, demo=False):
 	if not args.get("bank_account"):
-		args["bank_account"] = _("Bank Account")
+		if not demo:
+			return
+		args["bank_account"] = _("Demo Bank Account")
 
 	company_name = args.get("company_name")
 	bank_account_group = frappe.db.get_value(
@@ -529,6 +575,7 @@ def create_bank_account(args):
 			}
 		)
 		try:
+			frappe.db.savepoint("create_bank_account")
 			doc = bank_account.insert()
 
 			if args.get("set_default"):
@@ -543,8 +590,9 @@ def create_bank_account(args):
 			return doc
 
 		except RootNotEditable:
-			frappe.throw(_("Bank account cannot be named as {0}").format(args.get("bank_account")))
+			frappe.throw(frappe._("Bank account cannot be named as {0}").format(args.get("bank_account")))
 		except frappe.DuplicateEntryError:
+			frappe.db.rollback(save_point="create_bank_account")  # preserve transaction in postgres
 			# bank account same as a CoA entry
 			pass
 

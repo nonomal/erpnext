@@ -17,9 +17,9 @@ frappe.ui.form.on("Process Statement Of Accounts", {
 					},
 					callback: function (r) {
 						if (r && r.message) {
-							frappe.show_alert({ message: __("Emails Queued"), indicator: "blue" });
+							frappe.show_alert({ message: __("Emails queued"), indicator: "blue" });
 						} else {
-							frappe.msgprint(__("No Records for these settings."));
+							frappe.msgprint(__("No records for these settings."));
 						}
 					},
 				});
@@ -36,7 +36,7 @@ frappe.ui.form.on("Process Statement Of Accounts", {
 					type: "GET",
 					success: function (result) {
 						if (jQuery.isEmptyObject(result)) {
-							frappe.msgprint(__("No Records for these settings."));
+							frappe.msgprint(__("No records for these settings."));
 						} else {
 							window.location = url;
 						}
@@ -54,6 +54,9 @@ frappe.ui.form.on("Process Statement Of Accounts", {
 			};
 		});
 		frm.set_query("account", function () {
+			if (!frm.doc.company) {
+				frappe.throw(__("Please set Company"));
+			}
 			return {
 				filters: {
 					company: frm.doc.company,
@@ -61,6 +64,9 @@ frappe.ui.form.on("Process Statement Of Accounts", {
 			};
 		});
 		frm.set_query("cost_center", function () {
+			if (!frm.doc.company) {
+				frappe.throw(__("Please set Company"));
+			}
 			return {
 				filters: {
 					company: frm.doc.company,
@@ -68,9 +74,22 @@ frappe.ui.form.on("Process Statement Of Accounts", {
 			};
 		});
 		frm.set_query("project", function () {
+			if (!frm.doc.company) {
+				frappe.throw(__("Please set Company"));
+			}
 			return {
 				filters: {
 					company: frm.doc.company,
+				},
+			};
+		});
+		frm.set_query("print_format", function () {
+			return {
+				filters: {
+					print_format_for: "Report",
+					report: frm.doc.report,
+					disabled: 0,
+					print_format_type: "Jinja",
 				},
 			};
 		});
@@ -78,6 +97,12 @@ frappe.ui.form.on("Process Statement Of Accounts", {
 			frm.set_value("from_date", frappe.datetime.add_months(frappe.datetime.get_today(), -1));
 			frm.set_value("to_date", frappe.datetime.get_today());
 		}
+	},
+	company: function (frm) {
+		frm.set_value("account", "");
+		frm.set_value("cost_center", "");
+		frm.set_value("project", "");
+		erpnext.utils.set_letter_head(frm);
 	},
 	report: function (frm) {
 		let filters = {
@@ -89,6 +114,16 @@ frappe.ui.form.on("Process Statement Of Accounts", {
 		frm.set_query("account", function () {
 			return {
 				filters: filters,
+			};
+		});
+		frm.set_query("print_format", function () {
+			return {
+				filters: {
+					print_format_for: "Report",
+					report: frm.doc.report,
+					disabled: 0,
+					print_format_type: "Jinja",
+				},
 			};
 		});
 	},
@@ -126,13 +161,13 @@ frappe.ui.form.on("Process Statement Of Accounts", {
 							}
 							frm.refresh_field("customers");
 						} else {
-							frappe.throw(__("No Customers found with selected options."));
+							frappe.throw(__("No customers found with selected options."));
 						}
 					}
 				},
 			});
 		} else {
-			frappe.throw("Enter " + frm.doc.customer_collection + " name.");
+			frappe.throw(__("Enter {0} name.", [frm.doc.customer_collection]));
 		}
 	},
 });

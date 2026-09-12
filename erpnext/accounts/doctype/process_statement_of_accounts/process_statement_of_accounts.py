@@ -6,7 +6,6 @@ import copy
 
 import frappe
 from frappe import _
-from frappe.desk.reportview import get_match_cond
 from frappe.model.document import Document
 from frappe.utils import add_days, add_months, format_date, getdate, today
 from frappe.utils.jinja import validate_template
@@ -20,6 +19,7 @@ from erpnext.accounts.report.accounts_receivable_summary.accounts_receivable_sum
 	execute as get_ageing,
 )
 from erpnext.accounts.report.general_ledger.general_ledger import execute as get_soa
+from erpnext.utilities.query import get_match_conditions_qb
 
 
 class ProcessStatementOfAccounts(Document):
@@ -55,7 +55,7 @@ class ProcessStatementOfAccounts(Document):
 		enable_auto_email: DF.Check
 		filter_duration: DF.Int
 		finance_book: DF.Link | None
-		frequency: DF.Literal["Weekly", "Monthly", "Quarterly"]
+		frequency: DF.Literal["Daily", "Weekly", "Biweekly", "Monthly", "Quarterly"]
 		from_date: DF.Date | None
 		ignore_cr_dr_notes: DF.Check
 		ignore_exchange_rate_revaluation_journals: DF.Check
@@ -67,12 +67,15 @@ class ProcessStatementOfAccounts(Document):
 		pdf_name: DF.Data | None
 		posting_date: DF.Date | None
 		primary_mandatory: DF.Check
+		print_format: DF.Link | None
 		project: DF.TableMultiSelect[PSOAProject]
 		report: DF.Literal["General Ledger", "Accounts Receivable"]
 		sales_partner: DF.Link | None
 		sales_person: DF.Link | None
 		sender: DF.Link | None
+		show_future_payments: DF.Check
 		show_net_values_in_party_account: DF.Check
+		show_opening_entries: DF.Check
 		show_remarks: DF.Check
 		start_date: DF.Date | None
 		subject: DF.Data | None
@@ -82,6 +85,10 @@ class ProcessStatementOfAccounts(Document):
 	# end: auto-generated types
 
 	def validate(self):
+		self.validate_account()
+		self.validate_company_for_table("Cost Center")
+		self.validate_company_for_table("Project")
+
 		if not self.subject:
 			self.subject = "Statement Of Accounts for {{ customer.customer_name }}"
 		if not self.body:
@@ -93,8 +100,9 @@ class ProcessStatementOfAccounts(Document):
 		if not self.pdf_name:
 			self.pdf_name = "{{ customer.customer_name }}"
 
-		validate_template(self.subject)
-		validate_template(self.body)
+		validate_template(self.subject, restrict_globals=True)
+		validate_template(self.body, restrict_globals=True)
+		validate_template(self.pdf_name, restrict_globals=True)
 
 		if not self.customers:
 			frappe.throw(_("Customers not selected."))
@@ -103,6 +111,62 @@ class ProcessStatementOfAccounts(Document):
 			if self.start_date and getdate(self.start_date) >= getdate(today()):
 				self.to_date = self.start_date
 				self.from_date = add_months(self.to_date, -1 * self.filter_duration)
+
+		if self.print_format:
+			pf = frappe.db.get_value(
+				"Print Format",
+				self.print_format,
+				["print_format_type", "print_format_for", "report", "disabled"],
+				as_dict=True,
+			)
+			if not pf:
+				frappe.throw(title=_("Invalid Print Format"), msg=_("Selected Print Format does not exist."))
+			if pf.print_format_type != "Jinja":
+				frappe.throw(title=_("Invalid Print Format"), msg=_("Print Format Type should be Jinja."))
+			if pf.print_format_for != "Report" or pf.report != self.report or pf.disabled:
+				frappe.throw(
+					title=_("Invalid Print Format"),
+					msg=_(
+						"Print Format must be an enabled Report Print Format matching the selected Report."
+					),
+				)
+
+	def validate_account(self):
+		if not self.account:
+			return
+
+		if self.company != frappe.get_cached_value("Account", self.account, "company"):
+			frappe.throw(
+				_("Account {0} doesn't belong to Company {1}").format(
+					frappe.bold(self.account),
+					frappe.bold(self.company),
+				)
+			)
+
+	def validate_company_for_table(self, doctype):
+		field = frappe.scrub(doctype)
+		if not self.get(field):
+			return
+
+		fieldname = field + "_name"
+
+		values = set(d.get(fieldname) for d in self.get(field))
+		invalid_values = frappe.db.get_all(
+			doctype, filters={"name": ["in", values], "company": ["!=", self.company]}, pluck="name"
+		)
+
+		if invalid_values:
+			msg = _("<p>Following {0}s do not belong to Company {1}:</p>").format(
+				doctype, frappe.bold(self.company)
+			)
+
+			msg += (
+				"<ul>"
+				+ "".join(_("<li>{0}</li>").format(frappe.bold(row)) for row in invalid_values)
+				+ "</ul>"
+			)
+
+			frappe.throw(msg)
 
 
 def get_report_pdf(doc, consolidated=True):
@@ -207,7 +271,7 @@ def get_gl_filters(doc, entry, tax_id, presentation_currency):
 		"categorize_by": doc.categorize_by,
 		"currency": doc.currency,
 		"project": [p.project_name for p in doc.project],
-		"show_opening_entries": 0,
+		"show_opening_entries": doc.show_opening_entries,
 		"include_default_book_entries": 0,
 		"tax_id": tax_id if tax_id else None,
 		"show_net_values_in_party_account": doc.show_net_values_in_party_account,
@@ -225,6 +289,7 @@ def get_ar_filters(doc, entry):
 		"sales_person": doc.sales_person if doc.sales_person else None,
 		"territory": doc.territory if doc.territory else None,
 		"based_on_payment_terms": doc.based_on_payment_terms,
+		"show_future_payments": doc.show_future_payments,
 		"report_name": "Accounts Receivable",
 		"ageing_based_on": doc.ageing_based_on,
 		"range1": 30,
@@ -246,6 +311,10 @@ def get_html(doc, filters, entry, col, res, ageing):
 	# fetching custom print format for Process Statement of Accounts
 	if process_soa_html and process_soa_html.get(doc.report):
 		template_path = process_soa_html[doc.report][-1]
+
+	if doc.print_format:
+		custom_html, custom_css = frappe.db.get_value("Print Format", doc.print_format, ["html", "css"])
+		template_path = f"<style>{custom_css}</style> {custom_html}"
 
 	if doc.letter_head:
 		from frappe.www.printview import get_letter_head
@@ -297,15 +366,19 @@ def get_customers_based_on_territory_or_customer_group(customer_collection, coll
 
 def get_customers_based_on_sales_person(sales_person):
 	lft, rgt = frappe.db.get_value("Sales Person", sales_person, ["lft", "rgt"])
-	records = frappe.db.sql(
-		"""
-		select distinct parent, parenttype
-		from `tabSales Team` steam
-		where parenttype = 'Customer'
-			and exists(select name from `tabSales Person` where lft >= %s and rgt <= %s and name = steam.sales_person)
-	""",
-		(lft, rgt),
-		as_dict=1,
+	steam = frappe.qb.DocType("Sales Team")
+	sp = frappe.qb.DocType("Sales Person")
+	records = (
+		frappe.qb.from_(steam)
+		.select(steam.parent, steam.parenttype)
+		.distinct()
+		.where(
+			(steam.parenttype == "Customer")
+			& steam.sales_person.isin(
+				frappe.qb.from_(sp).select(sp.name).where((sp.lft >= lft) & (sp.rgt <= rgt))
+			)
+		)
+		.run(as_dict=1)
 	)
 	sales_person_records = frappe._dict()
 	for d in records:
@@ -330,12 +403,7 @@ def get_recipients_and_cc(customer, doc):
 			if doc.primary_mandatory and clist.primary_email:
 				for email in clist.primary_email.split(","):
 					recipients.append(email.strip())
-	cc = []
-	if doc.cc_to != "":
-		try:
-			cc = [frappe.get_value("User", user.cc, "email") for user in doc.cc_to]
-		except Exception:
-			pass
+	cc = [email for user in doc.cc_to if (email := frappe.get_value("User", user.cc, "email"))]
 
 	return recipients, cc
 
@@ -348,12 +416,11 @@ def get_context(customer, doc):
 	return {
 		"doc": template_doc,
 		"customer": frappe.get_doc("Customer", customer),
-		"frappe": frappe.utils,
 	}
 
 
 @frappe.whitelist()
-def fetch_customers(customer_collection, collection_name, primary_mandatory):
+def fetch_customers(customer_collection: str, collection_name: str, primary_mandatory: str | int):
 	customer_list = []
 	customers = []
 
@@ -393,35 +460,36 @@ def fetch_customers(customer_collection, collection_name, primary_mandatory):
 
 
 @frappe.whitelist()
-def get_customer_emails(customer_name, primary_mandatory, billing_and_primary=True):
+def get_customer_emails(customer_name: str, primary_mandatory: str | int, billing_and_primary: bool = True):
 	"""Returns first email from Contact Email table as a Billing email
 	when Is Billing Contact checked
 	and Primary email- email with Is Primary checked"""
 
-	billing_email = frappe.db.sql(
-		"""
-		SELECT
-			email.email_id
-		FROM
-			`tabContact Email` AS email
-		JOIN
-			`tabDynamic Link` AS link
-		ON
-			email.parent=link.parent
-		JOIN
-			`tabContact` AS contact
-		ON
-			contact.name=link.parent
-		WHERE
-			link.link_doctype='Customer'
-			and link.link_name=%s
-			and contact.is_billing_contact=1
-			{mcond}
-		ORDER BY
-			contact.creation desc
-		""".format(mcond=get_match_cond("Contact")),
-		customer_name,
+	frappe.has_permission("Customer", "read", customer_name, throw=True)
+
+	email = frappe.qb.DocType("Contact Email")
+	link = frappe.qb.DocType("Dynamic Link")
+	contact = frappe.qb.DocType("Contact")
+
+	query = (
+		frappe.qb.from_(email)
+		.join(link)
+		.on(email.parent == link.parent)
+		.join(contact)
+		.on(contact.name == link.parent)
+		.select(email.email_id)
+		.where(
+			(link.link_doctype == "Customer")
+			& (link.link_name == customer_name)
+			& (contact.is_billing_contact == 1)
+		)
+		.orderby(contact.creation, order=frappe.qb.desc)
 	)
+
+	for condition in get_match_conditions_qb("Contact", table=contact):
+		query = query.where(condition)
+
+	billing_email = query.run()
 
 	if len(billing_email) == 0 or (billing_email[0][0] is None):
 		if billing_and_primary:
@@ -439,8 +507,9 @@ def get_customer_emails(customer_name, primary_mandatory, billing_and_primary=Tr
 
 
 @frappe.whitelist()
-def download_statements(document_name):
+def download_statements(document_name: str):
 	doc = frappe.get_doc("Process Statement Of Accounts", document_name)
+	doc.check_permission("read")
 	report = get_report_pdf(doc)
 	if report:
 		frappe.local.response.filename = doc.name + ".pdf"
@@ -449,22 +518,23 @@ def download_statements(document_name):
 
 
 @frappe.whitelist()
-def send_emails(document_name, from_scheduler=False, posting_date=None):
+def send_emails(document_name: str, from_scheduler: bool = False, posting_date: str | None = None):
 	doc = frappe.get_doc("Process Statement Of Accounts", document_name)
+	doc.check_permission()
 	report = get_report_pdf(doc, consolidated=False)
 
 	if report:
 		for customer, report_pdf in report.items():
 			context = get_context(customer, doc)
-			filename = frappe.render_template(doc.pdf_name, context)
+			filename = frappe.render_template(doc.pdf_name, context, restrict_globals=True)
 			attachments = [{"fname": filename + ".pdf", "fcontent": report_pdf}]
 
 			recipients, cc = get_recipients_and_cc(customer, doc)
 			if not recipients:
 				continue
 
-			subject = frappe.render_template(doc.subject, context)
-			message = frappe.render_template(doc.body, context)
+			subject = frappe.render_template(doc.subject, context, restrict_globals=True)
+			message = frappe.render_template(doc.body, context, restrict_globals=True)
 
 			if doc.sender:
 				sender_email = frappe.db.get_value("Email Account", doc.sender, "email_id")
@@ -488,17 +558,18 @@ def send_emails(document_name, from_scheduler=False, posting_date=None):
 
 		if doc.enable_auto_email and from_scheduler:
 			new_to_date = getdate(posting_date or today())
-			if doc.frequency == "Weekly":
-				new_to_date = add_days(new_to_date, 7)
+			if doc.frequency in ("Daily", "Weekly", "Biweekly"):
+				frequency = {"Daily": 1, "Weekly": 7, "Biweekly": 14}
+				new_to_date = add_days(new_to_date, frequency[doc.frequency])
 			else:
 				new_to_date = add_months(new_to_date, 1 if doc.frequency == "Monthly" else 3)
 			new_from_date = add_months(new_to_date, -1 * doc.filter_duration)
 			doc.add_comment("Comment", "Emails sent on: " + frappe.utils.format_datetime(frappe.utils.now()))
 			if doc.report == "General Ledger":
-				doc.db_set("to_date", new_to_date, commit=True)
-				doc.db_set("from_date", new_from_date, commit=True)
+				frappe.db.set_value(doc.doctype, doc.name, "to_date", new_to_date)
+				frappe.db.set_value(doc.doctype, doc.name, "from_date", new_from_date)
 			else:
-				doc.db_set("posting_date", new_to_date, commit=True)
+				frappe.db.set_value(doc.doctype, doc.name, "posting_date", new_to_date)
 		return True
 	else:
 		return False
@@ -506,10 +577,11 @@ def send_emails(document_name, from_scheduler=False, posting_date=None):
 
 @frappe.whitelist()
 def send_auto_email():
+	frappe.has_permission("Process Statement Of Accounts", throw=True)
 	selected = frappe.get_list(
 		"Process Statement Of Accounts",
 		filters={"enable_auto_email": 1},
-		or_filters={"to_date": format_date(today()), "posting_date": format_date(today())},
+		or_filters={"to_date": today(), "posting_date": today()},
 	)
 	for entry in selected:
 		send_emails(entry.name, from_scheduler=True)

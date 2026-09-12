@@ -5,7 +5,10 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
+from frappe.query_builder.functions import Sum
 from frappe.utils import comma_or, flt, get_link_to_form, getdate, now, nowdate, safe_div
+
+from erpnext.controllers.item_close import closed_rows_settle, has_closable_items
 
 
 class OverAllowanceError(frappe.ValidationError):
@@ -35,6 +38,14 @@ status_map = {
 		["Draft", None],
 		["Open", "eval:self.docstatus==1"],
 		["Lost", "eval:self.status=='Lost'"],
+		["Partially Ordered", "is_partially_ordered"],
+		["Ordered", "is_fully_ordered"],
+		["Cancelled", "eval:self.docstatus==2"],
+	],
+	"Supplier Quotation": [
+		["Draft", None],
+		["Submitted", "eval:self.docstatus==1"],
+		["Stopped", "eval:self.status=='Stopped'"],
 		["Partially Ordered", "is_partially_ordered"],
 		["Ordered", "is_fully_ordered"],
 		["Cancelled", "eval:self.docstatus==2"],
@@ -91,9 +102,11 @@ status_map = {
 	],
 	"Delivery Note": [
 		["Draft", None],
-		["To Bill", "eval:self.per_billed < 100 and self.docstatus == 1"],
+		["To Bill", "eval:self.per_billed == 0 and self.docstatus == 1"],
+		["Partially Billed", "eval:self.per_billed < 100 and self.per_billed > 0 and self.docstatus == 1"],
 		["Completed", "eval:self.per_billed == 100 and self.docstatus == 1"],
 		["Return Issued", "eval:self.per_returned == 100 and self.docstatus == 1"],
+		["Return", "eval:self.is_return == 1 and self.per_billed == 0 and self.docstatus == 1"],
 		["Cancelled", "eval:self.docstatus==2"],
 		["Closed", "eval:self.status=='Closed' and self.docstatus != 2"],
 	],
@@ -101,10 +114,11 @@ status_map = {
 		["Draft", None],
 		["To Bill", "eval:self.per_billed == 0 and self.docstatus == 1"],
 		["Partly Billed", "eval:self.per_billed > 0 and self.per_billed < 100 and self.docstatus == 1"],
+		["Return", "eval:self.is_return == 1 and self.per_billed == 0 and self.docstatus == 1"],
 		["Return Issued", "eval:self.per_returned == 100 and self.docstatus == 1"],
 		[
 			"Completed",
-			"eval:(self.per_billed == 100 and self.docstatus == 1) or (self.docstatus == 1 and self.grand_total == 0 and self.per_returned != 100 and self.is_return == 0)",
+			"eval:(self.per_billed >= 100 and self.docstatus == 1) or (self.docstatus == 1 and self.grand_total == 0 and self.per_returned != 100 and self.is_return == 0)",
 		],
 		["Cancelled", "eval:self.docstatus==2"],
 		["Closed", "eval:self.status=='Closed' and self.docstatus != 2"],
@@ -116,7 +130,7 @@ status_map = {
 		["Pending", "eval:self.status != 'Stopped' and self.per_ordered == 0 and self.docstatus == 1"],
 		[
 			"Ordered",
-			"eval:self.status != 'Stopped' and self.per_ordered == 100 and self.docstatus == 1 and self.material_request_type == 'Purchase'",
+			"eval:self.status != 'Stopped' and self.per_ordered == 100 and self.docstatus == 1 and self.material_request_type in ['Purchase', 'Manufacture', 'Subcontracting']",
 		],
 		[
 			"Transferred",
@@ -128,7 +142,7 @@ status_map = {
 		],
 		[
 			"Received",
-			"eval:self.status != 'Stopped' and self.per_received == 100 and self.docstatus == 1 and self.material_request_type == 'Purchase'",
+			"eval:self.status != 'Stopped' and self.docstatus == 1 and ((self.per_received == 100 and self.material_request_type == 'Purchase') or (self.per_ordered == 100 and self.material_request_type == 'Customer Provided'))",
 		],
 		[
 			"Partially Received",
@@ -136,15 +150,11 @@ status_map = {
 		],
 		[
 			"Partially Received",
-			"eval:self.status != 'Stopped' and self.per_ordered < 100 and self.per_ordered > 0 and self.docstatus == 1 and self.material_request_type == 'Material Transfer'",
+			"eval:self.status != 'Stopped' and self.per_ordered < 100 and self.per_ordered > 0 and self.docstatus == 1 and self.material_request_type in ['Material Transfer', 'Customer Provided']",
 		],
 		[
 			"Partially Ordered",
-			"eval:self.status != 'Stopped' and self.per_ordered < 100 and self.per_ordered > 0 and self.docstatus == 1 and self.material_request_type != 'Material Transfer'",
-		],
-		[
-			"Manufactured",
-			"eval:self.status != 'Stopped' and self.per_ordered == 100 and self.docstatus == 1 and self.material_request_type == 'Manufacture'",
+			"eval:self.status != 'Stopped' and self.per_ordered < 100 and self.per_ordered > 0 and self.per_received < 100 and self.docstatus == 1 and self.material_request_type not in ['Material Transfer', 'Customer Provided']",
 		],
 	],
 	"POS Opening Entry": [
@@ -164,6 +174,18 @@ status_map = {
 		["Draft", None],
 		["Completed", "eval:self.docstatus == 1"],
 	],
+	"Pick List": [
+		["Draft", None],
+		["Open", "eval:self.docstatus == 1"],
+		["Completed", "is_fully_transferred"],
+		["Partially Transferred", "is_partially_transferred"],
+		[
+			"Partly Delivered",
+			"eval:self.purpose == 'Delivery' and self.delivery_status == 'Partly Delivered'",
+		],
+		["Completed", "eval:self.purpose == 'Delivery' and self.delivery_status == 'Fully Delivered'"],
+		["Cancelled", "eval:self.docstatus == 2"],
+	],
 }
 
 
@@ -175,9 +197,64 @@ class StatusUpdater(Document):
 	Installation Note: Update Installed Qty, Update Percent Qty and Validate over installation
 	"""
 
+	def on_discard(self):
+		if self.meta.has_field("status"):
+			self.db_set("status", "Cancelled")
+
 	def update_prevdoc_status(self):
+		self.validate_closed_source_items()
 		self.update_qty()
 		self.validate_qty()
+
+	def get_closed_source_links(self):
+		"""Row links that must not point at a closed source row.
+
+		`status_updater` covers documents whose progress it already tracks.
+		Delivery Note and Purchase Receipt are billed through their own services
+		instead, so their invoices declare the link in `closed_source_links`.
+		"""
+		links = [
+			(args["source_dt"], args["join_field"], args["target_dt"], args["target_parent_dt"])
+			for args in self.status_updater
+			if args.get("target_dt")
+			and args.get("target_parent_dt")
+			and has_closable_items(args["target_parent_dt"])
+		]
+
+		return links + list(getattr(self, "closed_source_links", []))
+
+	def validate_closed_source_items(self):
+		"""Block submitting against rows that were closed on the source document."""
+		if self.docstatus != 1:
+			return
+
+		for source_dt, join_field, target_dt, target_parent_dt in self.get_closed_source_links():
+			if not frappe.get_meta(target_dt).has_field("closed"):
+				continue
+
+			row_idx = {}
+			for d in self.get_all_children(source_dt):
+				if d.get(join_field):
+					row_idx[d.get(join_field)] = d.idx
+
+			if not row_idx:
+				continue
+
+			closed_rows = frappe.get_all(
+				target_dt,
+				filters={"name": ("in", list(row_idx)), "closed": 1},
+				fields=["name", "item_code", "parent"],
+			)
+
+			for row in closed_rows:
+				frappe.throw(
+					_("Row #{0}: Item {1} is closed in {2} {3} and cannot be processed further").format(
+						row_idx[row.name],
+						frappe.bold(row.item_code),
+						_(target_parent_dt),
+						frappe.bold(row.parent),
+					)
+				)
 
 	def set_status(self, update=False, status=None, update_modified=True):
 		if self.is_new():
@@ -249,61 +326,112 @@ class StatusUpdater(Document):
 
 	def validate_qty(self):
 		"""Validates qty at row level"""
-		self.item_allowance = {}
-		self.global_qty_allowance = None
-		self.global_amount_allowance = None
+		selling_doctypes = ("Sales Order", "Sales Invoice", "Delivery Note")
+		buying_doctypes = ("Purchase Order", "Purchase Invoice", "Purchase Receipt")
 
 		for args in self.status_updater:
-			if "target_ref_field" not in args:
-				# if target_ref_field is not specified, the programmer does not want to validate qty / amount
+			if "target_ref_field" not in args or args.get("validate_qty") is False:
+				# if target_ref_field is not specified or validate_qty is explicitly set to False, skip validation
 				continue
+
+			# Reset per-args so each config block uses its own allowance source without
+			# leaking cached values from a previous config block.
+			self.item_allowance = {}
+			self.global_qty_allowance = None
+			self.global_amount_allowance = None
+
+			items_to_validate = []
+			selling_negative_rate_allowed = frappe.get_single_value(
+				"Selling Settings", "allow_negative_rates_for_items"
+			)
+			buying_negative_rate_allowed = frappe.get_single_value(
+				"Buying Settings", "allow_negative_rates_for_items"
+			)
 
 			# get unique transactions to update
 			for d in self.get_all_children():
-				if hasattr(d, "qty") and d.qty < 0 and not self.get("is_return"):
-					frappe.throw(_("For an item {0}, quantity must be positive number").format(d.item_code))
+				if hasattr(d, "qty") and flt(d.qty) < 0 and not self.get("is_return"):
+					frappe.throw(_("For an item {0}, quantity must be a positive number").format(d.item_code))
 
-				if hasattr(d, "qty") and d.qty > 0 and self.get("is_return"):
-					frappe.throw(_("For an item {0}, quantity must be negative number").format(d.item_code))
+				if hasattr(d, "qty") and flt(d.qty) > 0 and self.get("is_return"):
+					frappe.throw(_("For an item {0}, quantity must be a negative number").format(d.item_code))
 
-				if not frappe.db.get_single_value("Selling Settings", "allow_negative_rates_for_items"):
+				if (not selling_negative_rate_allowed and self.doctype in selling_doctypes) or (
+					not buying_negative_rate_allowed and self.doctype in buying_doctypes
+				):
 					if hasattr(d, "item_code") and hasattr(d, "rate") and flt(d.rate) < 0:
 						frappe.throw(
 							_(
-								"For item {0}, rate must be a positive number. To Allow negative rates, enable {1} in {2}"
+								"For item {0}, rate must be a positive number. To allow negative rates, enable {1} in {2}"
 							).format(
 								frappe.bold(d.item_code),
 								frappe.bold(_("`Allow Negative rates for Items`")),
-								get_link_to_form("Selling Settings", "Selling Settings"),
+								get_link_to_form(
+									"Selling Settings"
+									if self.doctype in selling_doctypes
+									else "Buying Settings"
+								),
 							),
 						)
 
 				if d.doctype == args["source_dt"] and d.get(args["join_field"]):
-					args["name"] = d.get(args["join_field"])
-
-					is_from_pp = (
-						hasattr(d, "production_plan_sub_assembly_item")
-						and frappe.db.get_value(
-							"Production Plan Sub Assembly Item",
-							d.production_plan_sub_assembly_item,
-							"type_of_manufacturing",
+					items_to_validate.append(
+						frappe._dict(
+							{
+								"name": d.get(args["join_field"]),
+								"production_plan_sub_assembly_item": d.get(
+									"production_plan_sub_assembly_item"
+								),
+								"idx": d.idx,
+								"child_doc": d,
+							}
 						)
-						== "Subcontract"
 					)
-					args["item_code"] = "production_item" if is_from_pp else "item_code"
 
-					# get all qty where qty > target_field
-					item = frappe.db.sql(
-						"""select `{item_code}` as item_code, `{target_ref_field}`,
-						`{target_field}`, parenttype, parent from `tab{target_dt}`
-						where `{target_ref_field}` < `{target_field}`
-						and name=%s and docstatus=1""".format(**args),
-						args["name"],
-						as_dict=1,
+			if items_to_validate:
+				pp_sub_assembly_items = [
+					item.production_plan_sub_assembly_item
+					for item in items_to_validate
+					if item.production_plan_sub_assembly_item
+				]
+
+				pp_subcontract_items = []
+				if pp_sub_assembly_items:
+					pp_subcontract_items = frappe.db.get_all(
+						"Production Plan Sub Assembly Item",
+						filters={
+							"name": ("in", pp_sub_assembly_items),
+							"type_of_manufacturing": "Subcontract",
+						},
+						pluck="name",
 					)
+
+				regular_items = []
+				pp_items = []
+
+				for item in items_to_validate:
+					if item.production_plan_sub_assembly_item in pp_subcontract_items:
+						pp_items.append(item.name)
+					else:
+						regular_items.append(item.name)
+
+				item_details = []
+
+				# Query regular items with item_code field
+				if regular_items:
+					item_details.extend(self.fetch_items_with_pending_qty(args, "item_code", regular_items))
+
+				# Query production plan items with production_item field
+				if pp_items and args.get("target_dt") in ["Production Plan Sub Assembly Item"]:
+					item_details.extend(self.fetch_items_with_pending_qty(args, "production_item", pp_items))
+
+				item_lookup = {item.name: item for item in item_details}
+
+				for child_item in items_to_validate:
+					item = item_lookup.get(child_item.name)
+
 					if item:
-						item = item[0]
-						item["idx"] = d.idx
+						item["idx"] = child_item.idx
 						item["target_ref_field"] = args["target_ref_field"].replace("_", " ")
 
 						# if not item[args['target_ref_field']]:
@@ -316,11 +444,47 @@ class StatusUpdater(Document):
 						elif item[args["target_ref_field"]]:
 							self.check_overflow_with_allowance(item, args)
 
+	def fetch_items_with_pending_qty(self, args, item_field, items):
+		doctype = frappe.qb.DocType(args["target_dt"])
+		item_field_col = doctype[item_field]
+		target_ref_field = doctype[args["target_ref_field"]]
+		target_field = doctype[args["target_field"]]
+
+		is_qty_check = "qty" in args["target_ref_field"]
+
+		query = (
+			frappe.qb.from_(doctype)
+			.select(
+				doctype.name,
+				item_field_col.as_("item_code"),
+				target_ref_field,
+				target_field,
+				doctype.parenttype,
+				doctype.parent,
+			)
+			.where(target_ref_field < target_field)
+			.where(doctype.name.isin(items))
+			.where(doctype.docstatus == 1)
+		)
+
+		if is_qty_check:
+			item_table = frappe.qb.DocType("Item")
+			query = (
+				query.join(item_table)
+				.on(item_table.name == item_field_col)
+				.where(item_table.is_stock_item == 1)
+			)
+
+		return query.run(as_dict=True)
+
 	def check_overflow_with_allowance(self, item, args):
 		"""
-		Checks if there is overflow condering a relaxation allowance
+		Checks if there is overflow considering a relaxation allowance.
 		"""
 		qty_or_amount = "qty" if "qty" in args["target_ref_field"] else "amount"
+		global_qty_allowance_field = args.get("global_allowance_field", "over_delivery_receipt_allowance")
+		global_qty_allowance_doctype = args.get("global_allowance_doctype", "Stock Settings")
+		item_qty_allowance_field = args.get("item_allowance_field", "over_delivery_receipt_allowance")
 
 		# check if overflow is within allowance
 		(
@@ -328,21 +492,27 @@ class StatusUpdater(Document):
 			self.item_allowance,
 			self.global_qty_allowance,
 			self.global_amount_allowance,
-		) = get_allowance_for(
-			item["item_code"],
-			self.item_allowance,
-			self.global_qty_allowance,
-			self.global_amount_allowance,
-			qty_or_amount,
+		) = (
+			get_allowance_for(
+				item["item_code"],
+				self.item_allowance,
+				self.global_qty_allowance,
+				self.global_amount_allowance,
+				qty_or_amount,
+				global_qty_allowance_field,
+				global_qty_allowance_doctype,
+				item_qty_allowance_field,
+			)
+			if args["source_dt"] != "Pick List Item"
+			else (0, {}, None, None)
 		)
 
-		role_allowed_to_over_deliver_receive = frappe.db.get_single_value(
-			"Stock Settings", "role_allowed_to_over_deliver_receive"
-		)
-		role_allowed_to_over_bill = frappe.db.get_single_value(
-			"Accounts Settings", "role_allowed_to_over_bill"
-		)
-		role = role_allowed_to_over_deliver_receive if qty_or_amount == "qty" else role_allowed_to_over_bill
+		role = None
+		if qty_or_amount == "qty":
+			if args.get("overflow_type") in ("delivery", "receipt"):
+				role = frappe.get_single_value("Stock Settings", "role_allowed_to_over_deliver_receive")
+		else:
+			role = frappe.get_single_value("Accounts Settings", "role_allowed_to_over_bill")
 
 		overflow_percent = (
 			(item[args["target_field"]] - item[args["target_ref_field"]]) / item[args["target_ref_field"]]
@@ -373,14 +543,23 @@ class StatusUpdater(Document):
 		):
 			return
 
-		if qty_or_amount == "qty":
-			action_msg = _(
-				'To allow over receipt / delivery, update "Over Receipt/Delivery Allowance" in Stock Settings or the Item.'
-			)
+		if args["source_dt"] != "Pick List Item" and args["target_dt"] not in [
+			"Quotation Item",
+			"Supplier Quotation Item",
+			"Packed Item",
+		]:
+			if args.get("target_dt") == "Material Request Item":
+				action_msg = _('To allow over ordering, update "Over Order Allowance" in Buying Settings.')
+			elif qty_or_amount == "qty":
+				action_msg = _(
+					'To allow over receipt / delivery, update "Over Receipt/Delivery Allowance" in Stock Settings or the Item.'
+				)
+			else:
+				action_msg = _(
+					'To allow over billing, update "Over Billing Allowance" in Accounts Settings or the Item.'
+				)
 		else:
-			action_msg = _(
-				'To allow over billing, update "Over Billing Allowance" in Accounts Settings or the Item.'
-			)
+			action_msg = None
 
 		frappe.throw(
 			_(
@@ -392,8 +571,7 @@ class StatusUpdater(Document):
 				frappe.bold(_(self.doctype)),
 				frappe.bold(item.get("item_code")),
 			)
-			+ "<br><br>"
-			+ action_msg,
+			+ ("<br><br>" + action_msg if action_msg else ""),
 			OverAllowanceError,
 			title=_("Limit Crossed"),
 		)
@@ -423,9 +601,9 @@ class StatusUpdater(Document):
 		for args in self.status_updater:
 			# condition to include current record (if submit or no if cancel)
 			if self.docstatus == 1:
-				args["cond"] = " or parent='%s'" % self.name.replace('"', '"')
+				args["cond"] = " or parent=%s" % frappe.db.escape(self.name)
 			else:
-				args["cond"] = " and parent!='%s'" % self.name.replace('"', '"')
+				args["cond"] = " and parent!=%s" % frappe.db.escape(self.name)
 
 			self._update_children(args, update_modified)
 
@@ -437,13 +615,6 @@ class StatusUpdater(Document):
 		for d in self.get_all_children():
 			if d.doctype != args["source_dt"]:
 				continue
-
-			if (
-				d.get("material_request")
-				and frappe.db.get_value("Material Request", d.material_request, "material_request_type")
-				== "Subcontracting"
-			):
-				args.update({"source_field": "fg_item_qty"})
 
 			self._update_modified(args, update_modified)
 
@@ -460,11 +631,12 @@ class StatusUpdater(Document):
 					args["second_source_extra_cond"] = ""
 
 				args["second_source_condition"] = frappe.db.sql(
-					""" select ifnull((select sum({second_source_field})
+					""" select coalesce((select sum({second_source_field})
 					from `tab{second_source_dt}`
-					where `{second_join_field}`='{detail_id}'
+					where `{second_join_field}`=%(detail_id)s
 					and (`tab{second_source_dt}`.docstatus=1)
-					{second_source_extra_cond}), 0) """.format(**args)
+					{second_source_extra_cond}), 0) """.format(**args),
+					{"detail_id": args["detail_id"]},
 				)[0][0]
 
 			if args["detail_id"]:
@@ -474,10 +646,11 @@ class StatusUpdater(Document):
 				args["source_dt_value"] = (
 					frappe.db.sql(
 						"""
-						(select ifnull(sum({source_field}), 0)
-							from `tab{source_dt}` where `{join_field}`='{detail_id}'
+						(select coalesce(sum({source_field}), 0)
+							from `tab{source_dt}` where `{join_field}`=%(detail_id)s
 							and (docstatus=1 {cond}) {extra_cond})
-				""".format(**args)
+				""".format(**args),
+						{"detail_id": args["detail_id"]},
 					)[0][0]
 					or 0.0
 				)
@@ -488,26 +661,55 @@ class StatusUpdater(Document):
 				frappe.db.sql(
 					"""update `tab{target_dt}`
 					set {target_field} = {source_dt_value} {update_modified}
-					where name='{detail_id}'""".format(**args)
+					where name=%(detail_id)s""".format(**args),
+					{"detail_id": args["detail_id"]},
 				)
 
 	@staticmethod
 	def _calculate_target_parent_percentage(
-		name, target_parent_dt, target_dt, target_ref_field, target_field
+		name,
+		target_parent_dt,
+		target_dt,
+		target_ref_field,
+		target_field,
+		target_parent_field=None,
+		exclude_field=None,
 	):
+		filters = {"parent": name, "parenttype": target_parent_dt}
+		if exclude_field:
+			filters[exclude_field] = 0
+
+		tracks_closed_rows = closed_rows_settle(target_parent_dt, target_dt, target_parent_field)
+
+		fields = [target_ref_field, target_field]
+		if tracks_closed_rows:
+			fields.append("closed")
+
 		child_records = frappe.get_all(
 			target_dt,
-			filters={"parent": name, "parenttype": target_parent_dt},
-			fields=[target_ref_field, target_field],
+			filters=filters,
+			fields=fields,
 		)
 
-		sum_ref = sum(abs(record[target_ref_field]) for record in child_records)
+		if exclude_field and not child_records:
+			return 100
+
+		# For operator dicts, the alias is in the "as" key; for strings, use the field name directly
+		ref_key = target_ref_field.get("as") if isinstance(target_ref_field, dict) else target_ref_field
+
+		# A closed row is written off, so it leaves the denominator rather than
+		# counting as done. The percentage stays a true measure of what was
+		# actually received, delivered or billed against what is still expected.
+		# Once every row is written off there is nothing left to measure against,
+		# so fall back to the whole table and report what actually happened.
+		open_records = [r for r in child_records if not (tracks_closed_rows and r["closed"])]
+		basis = open_records or child_records
+
+		sum_ref = sum(abs(record[ref_key]) for record in basis)
 
 		if sum_ref > 0:
 			percentage = round(
-				sum(min(abs(record[target_field]), abs(record[target_ref_field])) for record in child_records)
-				/ sum_ref
-				* 100,
+				sum(min(abs(record[target_field]), abs(record[ref_key])) for record in basis) / sum_ref * 100,
 				6,
 			)
 		else:
@@ -547,13 +749,18 @@ class StatusUpdater(Document):
 		update_data = {}
 
 		if args.get("target_parent_field"):
-			update_data[args.get("target_parent_field")] = self._calculate_target_parent_percentage(
-				args["name"],
-				args["target_parent_dt"],
-				args["target_dt"],
-				args["target_ref_field"],
-				args["target_field"],
-			)
+			if args.get("billing_percentage") is not None:
+				update_data[args.get("target_parent_field")] = args["billing_percentage"]
+			else:
+				update_data[args.get("target_parent_field")] = self._calculate_target_parent_percentage(
+					args["name"],
+					args["target_parent_dt"],
+					args["target_dt"],
+					args["target_ref_field"],
+					args["target_field"],
+					args["target_parent_field"],
+					args.get("exclude_field"),
+				)
 			# update field
 			if args.get("status_field"):
 				update_data[args.get("status_field")] = self._determine_status(
@@ -561,7 +768,7 @@ class StatusUpdater(Document):
 				)
 
 		if update_data:
-			target = frappe.get_doc(args["target_parent_dt"], args["name"])
+			target = frappe.get_lazy_doc(args["target_parent_dt"], args["name"])
 			target.update(update_data)  # status calculus might depend on it
 			status = target.get_status()
 			if status.get("status"):
@@ -584,18 +791,10 @@ class StatusUpdater(Document):
 		if not ref_docs:
 			return
 
-		zero_amount_refdocs = frappe.db.sql_list(
-			f"""
-			SELECT
-				name
-			from
-				`tab{ref_dt}`
-			where
-				docstatus = 1
-				and base_net_total = 0
-				and name in %(ref_docs)s
-		""",
-			{"ref_docs": ref_docs},
+		zero_amount_refdocs = frappe.get_all(
+			ref_dt,
+			filters={"docstatus": 1, "base_net_total": 0, "name": ["in", ref_docs]},
+			pluck="name",
 		)
 
 		if zero_amount_refdocs:
@@ -603,25 +802,25 @@ class StatusUpdater(Document):
 
 	def update_billing_status(self, zero_amount_refdoc, ref_dt, ref_fieldname):
 		for ref_dn in zero_amount_refdoc:
+			ref_item = frappe.qb.DocType(f"{ref_dt} Item")
 			ref_doc_qty = flt(
-				frappe.db.sql(
-					"""select ifnull(sum(qty), 0) from `tab{} Item`
-				where parent={}""".format(ref_dt, "%s"),
-					(ref_dn),
-				)[0][0]
+				frappe.qb.from_(ref_item)
+				.select(Sum(ref_item.qty))
+				.where(ref_item.parent == ref_dn)
+				.run()[0][0]
 			)
 
+			doc_item = frappe.qb.DocType(f"{self.doctype} Item")
 			billed_qty = flt(
-				frappe.db.sql(
-					"""select ifnull(sum(qty), 0)
-				from `tab{} Item` where {}={} and docstatus=1""".format(self.doctype, ref_fieldname, "%s"),
-					(ref_dn),
-				)[0][0]
+				frappe.qb.from_(doc_item)
+				.select(Sum(doc_item.qty))
+				.where((doc_item[ref_fieldname] == ref_dn) & (doc_item.docstatus == 1))
+				.run()[0][0]
 			)
 
 			per_billed = safe_div(min(ref_doc_qty, billed_qty), ref_doc_qty) * 100
 
-			ref_doc = frappe.get_doc(ref_dt, ref_dn)
+			ref_doc = frappe.get_lazy_doc(ref_dt, ref_dn)
 
 			ref_doc.db_set("per_billed", per_billed)
 
@@ -637,16 +836,28 @@ class StatusUpdater(Document):
 			ref_doc.set_status(update=True)
 
 
-@frappe.request_cache
 def get_allowance_for(
 	item_code,
 	item_allowance=None,
 	global_qty_allowance=None,
 	global_amount_allowance=None,
 	qty_or_amount="qty",
+	global_qty_allowance_field="over_delivery_receipt_allowance",
+	global_qty_allowance_doctype="Stock Settings",
+	item_qty_allowance_field="over_delivery_receipt_allowance",
 ):
 	"""
-	Returns the allowance for the item, if not set, returns global allowance
+	Returns the allowance for the item, if not set, returns global allowance.
+
+	Args:
+	        item_code: The item to get allowance for.
+	        item_allowance: Cached per-item allowances from a previous call.
+	        global_qty_allowance: Cached global qty allowance from a previous call.
+	        global_amount_allowance: Cached global amount allowance from a previous call.
+	        qty_or_amount: Whether to return qty or amount allowance.
+	        global_qty_allowance_field: The field name on the settings doctype to use for the global qty allowance.
+	        global_qty_allowance_doctype: The settings doctype to read the global qty allowance from.
+	        item_qty_allowance_field: The field name on the Item doctype to use for the item-level qty allowance override.
 	"""
 	if item_allowance is None:
 		item_allowance = {}
@@ -668,13 +879,13 @@ def get_allowance_for(
 			)
 
 	qty_allowance, over_billing_allowance = frappe.get_cached_value(
-		"Item", item_code, ["over_delivery_receipt_allowance", "over_billing_allowance"]
+		"Item", item_code, [item_qty_allowance_field, "over_billing_allowance"]
 	)
 
 	if qty_or_amount == "qty" and not qty_allowance:
 		if global_qty_allowance is None:
 			global_qty_allowance = flt(
-				frappe.get_cached_value("Stock Settings", None, "over_delivery_receipt_allowance")
+				frappe.get_single_value(global_qty_allowance_doctype, global_qty_allowance_field)
 			)
 		qty_allowance = global_qty_allowance
 	elif qty_or_amount == "amount" and not over_billing_allowance:

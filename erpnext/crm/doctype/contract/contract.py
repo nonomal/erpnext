@@ -43,21 +43,8 @@ class Contract(Document):
 		signed_on: DF.Datetime | None
 		signee: DF.Data | None
 		start_date: DF.Date | None
-		status: DF.Literal["Unsigned", "Active", "Inactive"]
+		status: DF.Literal["Unsigned", "Active", "Inactive", "Cancelled"]
 	# end: auto-generated types
-
-	def autoname(self):
-		name = self.party_name
-
-		if self.contract_template:
-			name += f" - {self.contract_template} Agreement"
-
-		# If identical, append contract name with the next number in the iteration
-		if frappe.db.exists("Contract", name):
-			count = len(frappe.get_all("Contract", filters={"name": ["like", f"%{name}%"]}))
-			name = f"{name} - {count}"
-
-		self.name = _(name)
 
 	def validate(self):
 		self.set_missing_values()
@@ -73,6 +60,9 @@ class Contract(Document):
 
 	def before_submit(self):
 		self.signed_by_company = frappe.session.user
+
+	def on_discard(self):
+		self.db_set("status", "Cancelled")
 
 	def before_update_after_submit(self):
 		self.update_contract_status()

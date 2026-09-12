@@ -25,7 +25,7 @@ from frappe.utils.caching import redis_cache
 from frappe.utils.nestedset import get_ancestors_of
 from frappe.utils.safe_exec import get_safe_globals
 
-from erpnext.support.doctype.issue.issue import get_holidays
+from erpnext.support.doctype.issue.issue import calculate_first_response_time, get_holidays
 
 
 class ServiceLevelAgreement(Document):
@@ -197,7 +197,7 @@ class ServiceLevelAgreement(Document):
 		)
 
 		if self.document_type not in valid_document_types:
-			frappe.throw(msg=_("Please select valid document type."), title=_("Invalid Document Type"))
+			frappe.throw(msg=_("Please select a valid document type."), title=_("Invalid Document Type"))
 
 	def validate_status_field(self):
 		meta = frappe.get_meta(self.document_type)
@@ -232,7 +232,7 @@ class ServiceLevelAgreement(Document):
 		if self.document_type == "Issue":
 			return
 
-		service_level_agreement_fields = get_service_level_agreement_fields()
+		service_level_agreement_fields = get_service_level_agreement_fields(self.document_type)
 		meta = frappe.get_meta(self.document_type, cached=False)
 
 		if meta.custom:
@@ -276,6 +276,7 @@ class ServiceLevelAgreement(Document):
 						"hidden": field.get("hidden"),
 						"description": field.get("description"),
 						"default": field.get("default"),
+						"link_filters": field.get("link_filters"),
 					}
 				).insert(ignore_permissions=True)
 			else:
@@ -302,6 +303,7 @@ class ServiceLevelAgreement(Document):
 						"hidden": field.get("hidden"),
 						"description": field.get("description"),
 						"default": field.get("default"),
+						"link_filters": field.get("link_filters"),
 					}
 				).insert(ignore_permissions=True)
 			else:
@@ -309,7 +311,7 @@ class ServiceLevelAgreement(Document):
 				self.reset_field_properties(existing_field, "Custom Field", field)
 
 	def reset_field_properties(self, field, field_dt, sla_field):
-		field = frappe.get_doc(field_dt, {"fieldname": field.fieldname})
+		field = frappe.get_doc(field_dt, field.name)
 		field.label = sla_field.get("label")
 		field.fieldname = sla_field.get("fieldname")
 		field.fieldtype = sla_field.get("fieldtype")
@@ -320,6 +322,7 @@ class ServiceLevelAgreement(Document):
 		field.hidden = sla_field.get("hidden")
 		field.description = sla_field.get("description")
 		field.default = sla_field.get("default")
+		field.link_filters = sla_field.get("link_filters")
 		field.save(ignore_permissions=True)
 
 
@@ -427,7 +430,7 @@ def get_customer_territory(customer):
 
 
 @frappe.whitelist()
-def get_service_level_agreement_filters(doctype, name, customer=None):
+def get_service_level_agreement_filters(doctype: str, name: str, customer: str | None = None):
 	if not frappe.db.get_single_value("Support Settings", "track_service_level_agreement"):
 		return
 
@@ -484,10 +487,16 @@ def get_documents_with_active_service_level_agreement():
 
 
 def set_documents_with_active_service_level_agreement():
-	active = frozenset(
-		sla.document_type for sla in frappe.get_all("Service Level Agreement", fields=["document_type"])
-	)
-	frappe.cache.set_value("doctypes_with_active_sla", active)
+	try:
+		active = frozenset(
+			sla.document_type for sla in frappe.get_all("Service Level Agreement", fields=["document_type"])
+		)
+		frappe.cache.set_value("doctypes_with_active_sla", active)
+	except (frappe.DoesNotExistError, frappe.db.TableMissingError):
+		# This happens during install / uninstall when wildcard hook for SLA intercepts some doc action.
+		# In both cases, the error can be safely ignored.
+		active = frozenset()
+
 	return active
 
 
@@ -552,6 +561,8 @@ def handle_status_change(doc, apply_sla_for_resolution):
 	def set_first_response():
 		if doc.meta.has_field("first_responded_on") and not doc.get("first_responded_on"):
 			doc.first_responded_on = now_time
+			if doc.meta.has_field("first_response_time"):
+				doc.first_response_time = calculate_first_response_time(doc, doc.first_responded_on)
 			if get_datetime(doc.get("first_responded_on")) > get_datetime(doc.get("response_by")):
 				record_assigned_users_on_failure(doc)
 
@@ -771,8 +782,8 @@ def get_response_and_resolution_duration(doc):
 	return priority
 
 
-@frappe.whitelist()
-def reset_service_level_agreement(doctype: str, docname: str, reason, user):
+@frappe.whitelist(methods=["POST"])
+def reset_service_level_agreement(doctype: str, docname: str, reason: str, user: str):
 	if not frappe.db.get_single_value("Support Settings", "allow_resetting_service_level_agreement"):
 		frappe.throw(_("Allow Resetting Service Level Agreement from Support Settings."))
 
@@ -899,7 +910,7 @@ def record_assigned_users_on_failure(doc):
 		doc.add_comment(comment_type="Assigned", text=message)
 
 
-def get_service_level_agreement_fields():
+def get_service_level_agreement_fields(doctype: str):
 	return [
 		{
 			"collapsible": 1,
@@ -912,6 +923,9 @@ def get_service_level_agreement_fields():
 			"fieldtype": "Link",
 			"label": "Service Level Agreement",
 			"options": "Service Level Agreement",
+			"link_filters": frappe.as_json(
+				[["Service Level Agreement", "document_type", "=", doctype]], indent=None
+			),
 		},
 		{"fieldname": "priority", "fieldtype": "Link", "label": "Priority", "options": "Issue Priority"},
 		{"fieldname": "response_by", "fieldtype": "Datetime", "label": "Response By", "read_only": 1},
@@ -1026,7 +1040,7 @@ def get_tz(user):
 
 
 @frappe.whitelist()
-def get_user_time(user, to_string=False):
+def get_user_time(user: str, to_string: bool = False):
 	return get_datetime_str(now_datetime(user)) if to_string else now_datetime(user)
 
 

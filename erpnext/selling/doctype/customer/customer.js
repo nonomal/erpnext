@@ -2,7 +2,16 @@
 // License: GNU General Public License v3. See license.txt
 
 frappe.ui.form.on("Customer", {
+	restrict_to_companies(frm) {
+		if (!frm.doc.restrict_to_companies) {
+			frm.set_value("allowed_companies", []);
+		}
+	},
+
 	setup: function (frm) {
+		frm.set_query("allowed_companies", () => ({
+			query: "erpnext.stock.doctype.company_restriction.company_restriction.company_query",
+		}));
 		frm.custom_make_buttons = {
 			Opportunity: "Opportunity",
 			Quotation: "Quotation",
@@ -13,7 +22,7 @@ frappe.ui.form.on("Customer", {
 		frm.make_methods = {
 			Quotation: () =>
 				frappe.model.open_mapped_doc({
-					method: "erpnext.selling.doctype.customer.customer.make_quotation",
+					method: "erpnext.selling.doctype.customer.mapper.make_quotation",
 					frm: frm,
 				}),
 			"Sales Order": () =>
@@ -24,20 +33,21 @@ frappe.ui.form.on("Customer", {
 				}),
 			Opportunity: () =>
 				frappe.model.open_mapped_doc({
-					method: "erpnext.selling.doctype.customer.customer.make_opportunity",
+					method: "erpnext.selling.doctype.customer.mapper.make_opportunity",
 					frm: frm,
 				}),
 			"Payment Entry": () =>
 				frappe.model.open_mapped_doc({
-					method: "erpnext.selling.doctype.customer.customer.make_payment_entry",
+					method: "erpnext.selling.doctype.customer.mapper.make_payment_entry",
 					frm: frm,
 				}),
-			"Pricing Rule": () => erpnext.utils.make_pricing_rule(frm.doc.doctype, frm.doc.name),
+			"Pricing Rule": () => frm.trigger("make_pricing_rule"),
+			"Bank Account": () => erpnext.utils.make_bank_account(frm.doc.doctype, frm.doc.name),
 		};
 
 		frm.add_fetch("lead_name", "company_name", "customer_name");
 		frm.add_fetch("default_sales_partner", "commission_rate", "default_commission_rate");
-		frm.set_query("default_price_list", { selling: 1 });
+		frm.set_query("default_price_list", () => ({ filters: { selling: 1 } }));
 		frm.set_query("account", "accounts", function (doc, cdt, cdn) {
 			let d = locals[cdt][cdn];
 			let filters = {
@@ -73,17 +83,20 @@ frappe.ui.form.on("Customer", {
 
 		frm.set_query("customer_primary_contact", function (doc) {
 			return {
-				query: "erpnext.selling.doctype.customer.customer.get_customer_primary_contact",
+				query: "erpnext.selling.doctype.customer.customer.get_customer_primary",
 				filters: {
 					customer: doc.name,
+					type: "Contact",
 				},
 			};
 		});
+
 		frm.set_query("customer_primary_address", function (doc) {
 			return {
+				query: "erpnext.selling.doctype.customer.customer.get_customer_primary",
 				filters: {
-					link_doctype: "Customer",
-					link_name: doc.name,
+					customer: doc.name,
+					type: "Address",
 				},
 			};
 		});
@@ -112,7 +125,7 @@ frappe.ui.form.on("Customer", {
 					address_dict: frm.doc.customer_primary_address,
 				},
 				callback: function (r) {
-					frm.set_value("primary_address", r.message);
+					frm.set_value("primary_address", frappe.utils.html2text(r.message));
 				},
 			});
 		}
@@ -181,15 +194,20 @@ frappe.ui.form.on("Customer", {
 				frm.add_custom_button(__(doctype), frm.make_methods[doctype], __("Create"));
 			}
 
-			frm.add_custom_button(
-				__("Get Customer Group Details"),
-				function () {
-					frm.trigger("get_customer_group_details");
-				},
-				__("Actions")
-			);
+			if (frm.doc.customer_group) {
+				frm.add_custom_button(
+					__("Get Customer Group Details"),
+					function () {
+						frm.trigger("get_customer_group_details");
+					},
+					__("Actions")
+				);
+			}
 
-			if (cint(frappe.defaults.get_default("enable_common_party_accounting"))) {
+			if (
+				cint(frappe.defaults.get_default("enable_common_party_accounting")) &&
+				frappe.model.can_create("Party Link")
+			) {
 				frm.add_custom_button(
 					__("Link with Supplier"),
 					function () {
@@ -205,9 +223,27 @@ frappe.ui.form.on("Customer", {
 			frappe.contacts.clear_address_and_contact(frm);
 		}
 
-		var grid = cur_frm.get_field("sales_team").grid;
-		grid.set_column_disp("allocated_amount", false);
-		grid.set_column_disp("incentives", false);
+		let grid = frm.get_field("sales_team")?.grid;
+		if (grid) {
+			grid.set_column_disp("allocated_amount", false);
+			grid.set_column_disp("incentives", false);
+		}
+
+		frm.set_query("customer_group", () => {
+			return {
+				filters: {
+					is_group: 0,
+				},
+			};
+		});
+
+		frm.set_query("territory", () => {
+			return {
+				filters: {
+					is_group: 0,
+				},
+			};
+		});
 	},
 	validate: function (frm) {
 		if (frm.doc.lead_name) frappe.model.clear_doc("Lead", frm.doc.lead_name);
@@ -252,7 +288,7 @@ frappe.ui.form.on("Customer", {
 					error: function () {
 						dialog.hide();
 						frappe.msgprint({
-							message: __("Linking to Supplier Failed. Please try again."),
+							message: __("Linking to Supplier failed. Please try again."),
 							title: __("Linking Failed"),
 							indicator: "red",
 						});
@@ -262,5 +298,12 @@ frappe.ui.form.on("Customer", {
 			primary_action_label: __("Create Link"),
 		});
 		dialog.show();
+	},
+	make_pricing_rule: function (frm) {
+		frappe.new_doc("Pricing Rule", {
+			applicable_for: "Customer",
+			customer: frm.doc.name,
+			selling: 1,
+		});
 	},
 });

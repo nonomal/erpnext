@@ -14,7 +14,6 @@ from frappe.utils import (
 	nowdate,
 )
 
-import erpnext
 from erpnext.accounts.utils import get_fiscal_year
 from erpnext.assets.doctype.asset_depreciation_schedule.depreciation_methods import (
 	StraightLineMethod,
@@ -82,19 +81,19 @@ class DepreciationScheduleController(StraightLineMethod, WDVMethod):
 				self.set_depreciation_amount_for_last_row(row_idx)
 
 			self.depreciation_amount = flt(
-				self.depreciation_amount, self.asset_doc.precision("gross_purchase_amount")
+				self.depreciation_amount, self.asset_doc.precision("net_purchase_amount")
 			)
 			if not self.depreciation_amount:
 				break
 
 			self.pending_depreciation_amount = flt(
 				self.pending_depreciation_amount - self.depreciation_amount,
-				self.asset_doc.precision("gross_purchase_amount"),
+				self.asset_doc.precision("net_purchase_amount"),
 			)
 
 			self.adjust_depr_amount_for_salvage_value(row_idx)
 
-			if flt(self.depreciation_amount, self.asset_doc.precision("gross_purchase_amount")) > 0:
+			if flt(self.depreciation_amount, self.asset_doc.precision("net_purchase_amount")) > 0:
 				self.add_depr_schedule_row(row_idx)
 
 	def initialize_variables(self):
@@ -174,9 +173,9 @@ class DepreciationScheduleController(StraightLineMethod, WDVMethod):
 		if days <= 0:
 			frappe.throw(
 				_(
-					"""Error: This asset already has {0} depreciation periods booked.
-					The `depreciation start` date must be at least {1} periods after the `available for use` date.
-					Please correct the dates accordingly."""
+					"Error: This asset already has {0} depreciation periods booked. "
+					"The `depreciation start` date must be at least {1} periods after the `available for use` date. "
+					"Please correct the dates accordingly."
 				).format(
 					self.asset_doc.opening_number_of_booked_depreciations,
 					self.asset_doc.opening_number_of_booked_depreciations,
@@ -251,7 +250,7 @@ class DepreciationScheduleController(StraightLineMethod, WDVMethod):
 		return depr_booked_for_months
 
 	def get_total_pending_days_or_years(self):
-		if cint(frappe.db.get_single_value("Accounts Settings", "calculate_depr_using_total_days")):
+		if cint(frappe.get_single_value("Accounts Settings", "calculate_depr_using_total_days")):
 			last_depr_date = self.get_last_booked_depreciation_date()
 			if last_depr_date:
 				self.total_pending_days = date_diff(self.final_schedule_date, last_depr_date) - 1
@@ -310,7 +309,7 @@ class DepreciationScheduleController(StraightLineMethod, WDVMethod):
 		)
 
 		self.depreciation_amount = flt(
-			self.depreciation_amount, self.asset_doc.precision("gross_purchase_amount")
+			self.depreciation_amount, self.asset_doc.precision("net_purchase_amount")
 		)
 		if self.depreciation_amount > 0:
 			self.schedule_date = self.disposal_date
@@ -380,13 +379,13 @@ class DepreciationScheduleController(StraightLineMethod, WDVMethod):
 
 	def validate_depreciation_amount_for_low_value_assets(self):
 		"""
-		If gross purchase amount is too low, then depreciation amount
+		If net purchase amount is too low, then depreciation amount
 		can come zero sometimes based on the frequency and number of depreciations.
 		"""
-		if flt(self.depreciation_amount, self.asset_doc.precision("gross_purchase_amount")) <= 0:
+		if flt(self.depreciation_amount, self.asset_doc.precision("net_purchase_amount")) <= 0:
 			frappe.throw(
-				_("Gross Purchase Amount {0} cannot be depreciated over {1} cycles.").format(
-					frappe.bold(self.asset_doc.gross_purchase_amount),
+				_("Net Purchase Amount {0} cannot be depreciated over {1} cycles.").format(
+					frappe.bold(self.asset_doc.net_purchase_amount),
 					frappe.bold(self.fb_row.total_number_of_depreciations),
 				)
 			)

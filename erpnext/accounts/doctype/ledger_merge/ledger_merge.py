@@ -35,7 +35,7 @@ class LedgerMerge(Document):
 		from frappe.utils.background_jobs import enqueue
 		from frappe.utils.scheduler import is_scheduler_inactive
 
-		if is_scheduler_inactive() and not frappe.flags.in_test:
+		if is_scheduler_inactive() and not frappe.in_test:
 			frappe.throw(_("Scheduler is inactive. Cannot merge accounts."), title=_("Scheduler Inactive"))
 
 		job_id = f"ledger_merge::{self.name}"
@@ -47,7 +47,7 @@ class LedgerMerge(Document):
 				event="ledger_merge",
 				job_id=job_id,
 				docname=self.name,
-				now=frappe.conf.developer_mode or frappe.flags.in_test,
+				now=frappe.conf.developer_mode or frappe.in_test,
 			)
 			return True
 
@@ -55,8 +55,10 @@ class LedgerMerge(Document):
 
 
 @frappe.whitelist()
-def form_start_merge(docname):
-	return frappe.get_doc("Ledger Merge", docname).start_merge()
+def form_start_merge(docname: str):
+	lm_doc = frappe.get_doc("Ledger Merge", docname)
+	lm_doc.check_permission("write")
+	return lm_doc.start_merge()
 
 
 def start_merge(docname):
@@ -65,20 +67,22 @@ def start_merge(docname):
 	total = len(ledger_merge.merge_accounts)
 	for row in ledger_merge.merge_accounts:
 		if not row.merged:
+			frappe.db.savepoint("ledger_merge_row")
 			try:
 				merge_account(
 					row.account,
 					ledger_merge.account,
 				)
 				row.db_set("merged", 1)
-				frappe.db.commit()
+				if not frappe.in_test:
+					frappe.db.commit()
 				successful_merges += 1
 				frappe.publish_realtime(
 					"ledger_merge_progress",
 					{"ledger_merge": ledger_merge.name, "current": successful_merges, "total": total},
 				)
 			except Exception:
-				frappe.db.rollback()
+				frappe.db.rollback(save_point="ledger_merge_row")
 				ledger_merge.log_error("Ledger merge failed")
 			finally:
 				if successful_merges == total:

@@ -2,27 +2,28 @@
 # See license.txt
 
 import frappe
-from frappe.tests import IntegrationTestCase
 from frappe.utils import today
 
 from erpnext.accounts.doctype.payment_entry.test_payment_entry import create_payment_entry
 from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 from erpnext.accounts.party import get_party_account
 from erpnext.accounts.test.accounts_mixin import AccountsTestMixin
-from erpnext.selling.doctype.sales_order.sales_order import make_sales_invoice
+from erpnext.buying.doctype.purchase_order.test_purchase_order import create_purchase_order
+from erpnext.selling.doctype.sales_order.mapper import make_sales_invoice
 from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
+from erpnext.tests.utils import ERPNextTestSuite
 
 
-class TestUnreconcilePayment(AccountsTestMixin, IntegrationTestCase):
+class TestUnreconcilePayment(ERPNextTestSuite, AccountsTestMixin):
 	def setUp(self):
-		self.create_company()
-		self.create_customer()
-		self.create_usd_receivable_account()
-		self.create_item()
-		self.clear_old_entries()
-
-	def tearDown(self):
-		frappe.db.rollback()
+		self.company = "_Test Company"
+		self.customer = "_Test Customer"
+		self.supplier = "_Test Supplier"
+		self.item = "_Test Item"
+		self.debit_to = "Debtors - _TC"
+		self.cost_center = "Main - _TC"
+		self.cash = "Cash - _TC"
+		self.debtors_usd = "_Test Receivable USD - _TC"
 
 	def create_sales_invoice(self, do_not_submit=False):
 		si = create_sales_invoice(
@@ -364,16 +365,15 @@ class TestUnreconcilePayment(AccountsTestMixin, IntegrationTestCase):
 		# Assert 'Advance Paid'
 		so.reload()
 		pe.reload()
-		self.assertEqual(so.advance_paid, 100)
+		self.assertEqual(so.advance_paid, 0)
 		self.assertEqual(len(pe.references), 0)
 		self.assertEqual(pe.unallocated_amount, 100)
 
 		pe.cancel()
 		so.reload()
-		self.assertEqual(so.advance_paid, 100)
+		self.assertEqual(so.advance_paid, 0)
 
 	def test_06_unreconcile_advance_from_payment_entry(self):
-		self.enable_advance_as_liability()
 		so1 = self.create_sales_order()
 		so2 = self.create_sales_order()
 
@@ -417,14 +417,18 @@ class TestUnreconcilePayment(AccountsTestMixin, IntegrationTestCase):
 		so2.reload()
 		pe.reload()
 		self.assertEqual(so1.advance_paid, 150)
-		self.assertEqual(so2.advance_paid, 110)
+		self.assertEqual(so2.advance_paid, 0)
 		self.assertEqual(len(pe.references), 1)
 		self.assertEqual(pe.unallocated_amount, 110)
 
 		self.disable_advance_as_liability()
 
 	def test_07_adv_from_so_to_invoice(self):
-		self.enable_advance_as_liability()
+		frappe.db.set_value("Company", self.company, "book_advance_payments_in_separate_party_account", 1)
+		frappe.db.set_value(
+			"Company", self.company, "default_advance_received_account", "Advance Received - _TC"
+		)
+
 		so = self.create_sales_order()
 		pe = self.create_payment_entry()
 		pe.paid_amount = 1000
@@ -463,8 +467,77 @@ class TestUnreconcilePayment(AccountsTestMixin, IntegrationTestCase):
 		self.assertEqual(len(pr.get("invoices")), 0)
 		self.assertEqual(len(pr.get("payments")), 0)
 
-		# Assert 'Advance Paid'
 		so.reload()
 		self.assertEqual(so.advance_paid, 1000)
 
+		unreconcile = frappe.get_doc(
+			{
+				"doctype": "Unreconcile Payment",
+				"company": self.company,
+				"voucher_type": pe.doctype,
+				"voucher_no": pe.name,
+			}
+		)
+		unreconcile.add_references()
+		unreconcile.allocations = [x for x in unreconcile.allocations if x.reference_name == si.name]
+		unreconcile.save().submit()
+
+		# after unreconcilaition advance paid will be reduced
+		# Assert 'Advance Paid'
+		so.reload()
+		self.assertEqual(so.advance_paid, 0)
+
 		self.disable_advance_as_liability()
+
+	def test_unreconcile_advance_from_journal_entry(self):
+		po = create_purchase_order(
+			company=self.company,
+			supplier=self.supplier,
+			item=self.item,
+			qty=1,
+			rate=100,
+			transaction_date=today(),
+			do_not_submit=False,
+		)
+
+		je = frappe.get_doc(
+			{
+				"doctype": "Journal Entry",
+				"company": self.company,
+				"voucher_type": "Journal Entry",
+				"posting_date": po.transaction_date,
+				"multi_currency": True,
+				"accounts": [
+					{
+						"account": "Creditors - _TC",
+						"party_type": "Supplier",
+						"party": po.supplier,
+						"debit_in_account_currency": 100,
+						"is_advance": "Yes",
+						"reference_type": po.doctype,
+						"reference_name": po.name,
+					},
+					{"account": "Cash - _TC", "credit_in_account_currency": 100},
+				],
+			}
+		)
+		je.save().submit()
+		po.reload()
+		self.assertEqual(po.advance_paid, 100)
+
+		unreconcile = frappe.get_doc(
+			{
+				"doctype": "Unreconcile Payment",
+				"company": self.company,
+				"voucher_type": je.doctype,
+				"voucher_no": je.name,
+			}
+		)
+		unreconcile.add_references()
+		self.assertEqual(len(unreconcile.allocations), 1)
+		allocations = [x.reference_name for x in unreconcile.allocations]
+		self.assertEqual([po.name], allocations)
+		unreconcile.save().submit()
+
+		po.reload()
+		self.assertEqual(po.advance_paid, 0)

@@ -8,7 +8,7 @@ from datetime import date
 import frappe
 from frappe import _, throw
 from frappe.model.document import Document
-from frappe.utils import formatdate, getdate, today
+from frappe.utils import DateTimeLikeObject, cint, formatdate, getdate, today
 
 
 class OverlapError(frappe.ValidationError):
@@ -31,9 +31,10 @@ class HolidayList(Document):
 		from_date: DF.Date
 		holiday_list_name: DF.Data
 		holidays: DF.Table[Holiday]
+		is_half_day: DF.Check
 		subdivision: DF.Autocomplete | None
 		to_date: DF.Date
-		total_holidays: DF.Int
+		total_holidays: DF.Float
 		weekly_off: DF.Literal[
 			"", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
 		]
@@ -41,9 +42,12 @@ class HolidayList(Document):
 
 	def validate(self):
 		self.validate_days()
-		self.total_holidays = len(self.holidays)
+		self.update_total_holidays()
 		self.validate_duplicate_date()
 		self.sort_holidays()
+
+	def update_total_holidays(self):
+		self.total_holidays = sum(0.5 if cint(holiday.is_half_day) else 1 for holiday in self.holidays)
 
 	@frappe.whitelist()
 	def get_weekly_off_dates(self):
@@ -56,7 +60,17 @@ class HolidayList(Document):
 			if d in existing_holidays:
 				continue
 
-			self.append("holidays", {"description": _(self.weekly_off), "holiday_date": d, "weekly_off": 1})
+			self.append(
+				"holidays",
+				{
+					"description": _(self.weekly_off),
+					"holiday_date": d,
+					"weekly_off": 1,
+					"is_half_day": self.is_half_day,
+				},
+			)
+
+		self.update_total_holidays()
 
 	@frappe.whitelist()
 	def get_supported_countries(self):
@@ -99,8 +113,10 @@ class HolidayList(Document):
 				"holidays", {"description": holiday_name, "holiday_date": holiday_date, "weekly_off": 0}
 			)
 
+		self.update_total_holidays()
+
 	def sort_holidays(self):
-		self.holidays.sort(key=lambda x: getdate(x.holiday_date))
+		self.holidays.sort(key=lambda x: (x.weekly_off, getdate(x.holiday_date)))
 		for i in range(len(self.holidays)):
 			self.holidays[i].idx = i + 1
 
@@ -144,6 +160,7 @@ class HolidayList(Document):
 	@frappe.whitelist()
 	def clear_table(self):
 		self.set("holidays", [])
+		self.update_total_holidays()
 
 	def validate_duplicate_date(self):
 		unique_dates = []
@@ -159,7 +176,7 @@ class HolidayList(Document):
 
 
 @frappe.whitelist()
-def get_events(start, end, filters=None):
+def get_events(start: DateTimeLikeObject, end: DateTimeLikeObject, filters: str | dict | None = None):
 	"""Returns events for Gantt / Calendar view rendering.
 
 	:param start: Start date-time.
@@ -167,7 +184,7 @@ def get_events(start, end, filters=None):
 	:param filters: Filters (JSON).
 	"""
 	if filters:
-		filters = json.loads(filters)
+		filters = frappe.parse_json(filters)
 	else:
 		filters = []
 
@@ -194,7 +211,25 @@ def is_holiday(holiday_list, date=None):
 	if date is None:
 		date = today()
 	if holiday_list:
-		return bool(frappe.db.exists("Holiday", {"parent": holiday_list, "holiday_date": date}, cache=True))
+		return bool(
+			frappe.db.exists(
+				"Holiday", {"parent": holiday_list, "holiday_date": date, "is_half_day": 0}, cache=True
+			)
+		)
+	else:
+		return False
+
+
+def is_half_holiday(holiday_list, date=None):
+	"""Returns true if the given date is a half holiday in the given holiday list"""
+	if date is None:
+		date = today()
+	if holiday_list:
+		return bool(
+			frappe.db.exists(
+				"Holiday", {"parent": holiday_list, "holiday_date": date, "is_half_day": 1}, cache=True
+			)
+		)
 	else:
 		return False
 

@@ -67,9 +67,9 @@ frappe.ui.form.on("Project", {
 	},
 
 	refresh: function (frm) {
-		if (frm.doc.__islocal) {
-			frm.web_link && frm.web_link.remove();
-		} else {
+		frm.web_link && frm.web_link.closest(".user-action-row").remove();
+
+		if (!frm.doc.__islocal) {
 			frm.add_web_link("/projects?project=" + encodeURIComponent(frm.doc.name));
 
 			frm.trigger("show_dashboard");
@@ -88,9 +88,9 @@ frappe.ui.form.on("Project", {
 			);
 
 			frm.add_custom_button(
-				__("Update Total Purchase Cost"),
+				__("Update Costing and Billing"),
 				() => {
-					frm.events.update_total_purchase_cost(frm);
+					frm.events.update_costing_and_billing(frm);
 				},
 				__("Actions")
 			);
@@ -129,15 +129,15 @@ frappe.ui.form.on("Project", {
 		}
 	},
 
-	update_total_purchase_cost: function (frm) {
+	update_costing_and_billing: function (frm) {
 		frappe.call({
-			method: "erpnext.projects.doctype.project.project.recalculate_project_total_purchase_cost",
+			method: "erpnext.projects.doctype.project.project.update_costing_and_billing",
 			args: { project: frm.doc.name },
 			freeze: true,
-			freeze_message: __("Recalculating Purchase Cost against this Project..."),
+			freeze_message: __("Updating Costing and Billing fields against this Project..."),
 			callback: function (r) {
 				if (r && !r.exc) {
-					frappe.msgprint(__("Total Purchase Cost has been updated"));
+					frappe.msgprint(__("Costing and Billing fields have been updated"));
 					frm.refresh();
 				}
 			},
@@ -202,6 +202,12 @@ frappe.ui.form.on("Project", {
 				});
 		});
 	},
+
+	collect_progress: function (frm) {
+		if (frm.doc.collect_progress && !frm.doc.subject) {
+			frm.set_value("subject", __("For project - {0}, update your status", [frm.doc.project_name]));
+		}
+	},
 });
 
 function open_form(frm, doctype, child_doctype, parentfield) {
@@ -216,6 +222,9 @@ function open_form(frm, doctype, child_doctype, parentfield) {
 		new_child_doc.parenttype = doctype;
 		new_doc[parentfield] = [new_child_doc];
 		new_doc.project = frm.doc.name;
+		if (frm.doc.company) {
+			new_doc.company = frm.doc.company;
+		}
 
 		frappe.ui.form.make_quick_entry(doctype, null, null, new_doc);
 	});

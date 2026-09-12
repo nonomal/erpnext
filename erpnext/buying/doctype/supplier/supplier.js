@@ -2,7 +2,16 @@
 // License: GNU General Public License v3. See license.txt
 
 frappe.ui.form.on("Supplier", {
+	restrict_to_companies(frm) {
+		if (!frm.doc.restrict_to_companies) {
+			frm.set_value("allowed_companies", []);
+		}
+	},
+
 	setup: function (frm) {
+		frm.set_query("allowed_companies", () => ({
+			query: "erpnext.stock.doctype.company_restriction.company_restriction.company_query",
+		}));
 		frm.set_query("default_price_list", { buying: 1 });
 		if (frm.doc.__islocal == 1) {
 			frm.set_value("represents_company", "");
@@ -41,18 +50,20 @@ frappe.ui.form.on("Supplier", {
 
 		frm.set_query("supplier_primary_contact", function (doc) {
 			return {
-				query: "erpnext.buying.doctype.supplier.supplier.get_supplier_primary_contact",
+				query: "erpnext.buying.doctype.supplier.supplier.get_supplier_primary",
 				filters: {
 					supplier: doc.name,
+					type: "Contact",
 				},
 			};
 		});
 
 		frm.set_query("supplier_primary_address", function (doc) {
 			return {
+				query: "erpnext.buying.doctype.supplier.supplier.get_supplier_primary",
 				filters: {
-					link_doctype: "Supplier",
-					link_name: doc.name,
+					supplier: doc.name,
+					type: "Address",
 				},
 			};
 		});
@@ -64,6 +75,42 @@ frappe.ui.form.on("Supplier", {
 				},
 			};
 		});
+
+		frm.make_methods = {
+			"Purchase Order": () =>
+				frappe.model.with_doctype("Purchase Order", function () {
+					const po = frappe.model.get_new_doc("Purchase Order");
+					po.supplier = frm.doc.name;
+					frappe.set_route("Form", "Purchase Order", po.name);
+				}),
+			"Purchase Invoice": () =>
+				frappe.model.with_doctype("Purchase Invoice", function () {
+					const pi = frappe.model.get_new_doc("Purchase Invoice");
+					pi.supplier = frm.doc.name;
+					frappe.set_route("Form", "Purchase Invoice", pi.name);
+				}),
+			"Request for Quotation": () =>
+				frappe.model.with_doctype("Request for Quotation", function () {
+					const rfq = frappe.model.get_new_doc("Request for Quotation");
+					const row = frappe.model.add_child(rfq, "suppliers");
+					row.supplier = frm.doc.name;
+					frappe.set_route("Form", "Request for Quotation", rfq.name);
+				}),
+			"Supplier Quotation": () =>
+				frappe.model.with_doctype("Supplier Quotation", function () {
+					const sq = frappe.model.get_new_doc("Supplier Quotation");
+					sq.supplier = frm.doc.name;
+					frappe.set_route("Form", "Supplier Quotation", sq.name);
+				}),
+			"Bank Account": () => erpnext.utils.make_bank_account(frm.doc.doctype, frm.doc.name),
+			"Pricing Rule": () => frm.trigger("make_pricing_rule"),
+		};
+	},
+
+	supplier_group(frm) {
+		if (frm.doc.supplier_group) {
+			frm.trigger("get_supplier_group_details");
+		}
 	},
 
 	refresh: function (frm) {
@@ -104,31 +151,24 @@ frappe.ui.form.on("Supplier", {
 				__("View")
 			);
 
-			frm.add_custom_button(
-				__("Bank Account"),
-				function () {
-					erpnext.utils.make_bank_account(frm.doc.doctype, frm.doc.name);
-				},
-				__("Create")
-			);
+			for (const doctype in frm.make_methods) {
+				frm.add_custom_button(__(doctype), frm.make_methods[doctype], __("Create"));
+			}
 
-			frm.add_custom_button(
-				__("Pricing Rule"),
-				function () {
-					erpnext.utils.make_pricing_rule(frm.doc.doctype, frm.doc.name);
-				},
-				__("Create")
-			);
+			if (frm.doc.supplier_group) {
+				frm.add_custom_button(
+					__("Get Supplier Group Details"),
+					function () {
+						frm.trigger("get_supplier_group_details");
+					},
+					__("Actions")
+				);
+			}
 
-			frm.add_custom_button(
-				__("Get Supplier Group Details"),
-				function () {
-					frm.trigger("get_supplier_group_details");
-				},
-				__("Actions")
-			);
-
-			if (cint(frappe.defaults.get_default("enable_common_party_accounting"))) {
+			if (
+				cint(frappe.defaults.get_default("enable_common_party_accounting")) &&
+				frappe.model.can_create("Party Link")
+			) {
 				frm.add_custom_button(
 					__("Link with Customer"),
 					function () {
@@ -181,6 +221,8 @@ frappe.ui.form.on("Supplier", {
 			frm.toggle_reqd("represents_company", true);
 		} else {
 			frm.toggle_reqd("represents_company", false);
+			frm.set_value("represents_company", "");
+			frm.set_value("companies", []);
 		}
 	},
 	show_party_link_dialog: function (frm) {
@@ -224,5 +266,12 @@ frappe.ui.form.on("Supplier", {
 			primary_action_label: __("Create Link"),
 		});
 		dialog.show();
+	},
+	make_pricing_rule: function (frm) {
+		frappe.new_doc("Pricing Rule", {
+			applicable_for: "Supplier",
+			supplier: frm.doc.name,
+			buying: 1,
+		});
 	},
 });

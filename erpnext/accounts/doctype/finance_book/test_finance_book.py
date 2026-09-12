@@ -1,14 +1,13 @@
 # Copyright (c) 2018, Frappe Technologies Pvt. Ltd. and Contributors
 # See license.txt
-import unittest
 
 import frappe
-from frappe.tests import IntegrationTestCase
 
 from erpnext.accounts.doctype.journal_entry.test_journal_entry import make_journal_entry
+from erpnext.tests.utils import ERPNextTestSuite
 
 
-class TestFinanceBook(IntegrationTestCase):
+class TestFinanceBook(ERPNextTestSuite):
 	def test_finance_book(self):
 		finance_book = create_finance_book()
 
@@ -32,11 +31,4 @@ class TestFinanceBook(IntegrationTestCase):
 
 
 def create_finance_book():
-	if not frappe.db.exists("Finance Book", "_Test Finance Book"):
-		finance_book = frappe.get_doc(
-			{"doctype": "Finance Book", "finance_book_name": "_Test Finance Book"}
-		).insert()
-	else:
-		finance_book = frappe.get_doc("Finance Book", "_Test Finance Book")
-
-	return finance_book
+	return frappe.get_doc("Finance Book", "Test Finance Book 1")

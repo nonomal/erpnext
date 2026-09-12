@@ -1,24 +1,21 @@
 # Copyright (c) 2018, Frappe Technologies Pvt. Ltd. and Contributors
 # See license.txt
-import unittest
 
 import frappe
-from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, cstr, get_last_day, getdate, nowdate
 
 from erpnext.assets.doctype.asset.asset import get_asset_value_after_depreciation
 from erpnext.assets.doctype.asset.depreciation import post_depreciation_entries
-from erpnext.assets.doctype.asset.test_asset import create_asset_data
 from erpnext.assets.doctype.asset_depreciation_schedule.asset_depreciation_schedule import (
 	get_asset_depr_schedule_doc,
 )
 from erpnext.assets.doctype.asset_repair.test_asset_repair import create_asset_repair
 from erpnext.stock.doctype.purchase_receipt.test_purchase_receipt import make_purchase_receipt
+from erpnext.tests.utils import ERPNextTestSuite
 
 
-class TestAssetValueAdjustment(IntegrationTestCase):
+class TestAssetValueAdjustment(ERPNextTestSuite):
 	def setUp(self):
-		create_asset_data()
 		frappe.db.set_value(
 			"Company", "_Test Company", "capital_work_in_progress_account", "CWIP Account - _TC"
 		)
@@ -97,11 +94,12 @@ class TestAssetValueAdjustment(IntegrationTestCase):
 			("_Test Fixed Asset - _TC", 0.0, 4625.29),
 		)
 
-		gle = frappe.db.sql(
-			"""select account, debit, credit from `tabGL Entry`
-			where voucher_type='Journal Entry' and voucher_no = %s
-			order by account""",
-			adj_doc.journal_entry,
+		gle = frappe.get_all(
+			"GL Entry",
+			filters={"voucher_type": "Journal Entry", "voucher_no": adj_doc.journal_entry},
+			fields=["account", "debit", "credit"],
+			order_by="account",
+			as_list=True,
 		)
 
 		self.assertSequenceEqual(gle, expected_gle)
@@ -187,11 +185,12 @@ class TestAssetValueAdjustment(IntegrationTestCase):
 			("_Test Fixed Asset - _TC", 0.0, 5175.29),
 		)
 
-		gle = frappe.db.sql(
-			"""select account, debit, credit from `tabGL Entry`
-			where voucher_type='Journal Entry' and voucher_no = %s
-			order by account""",
-			adj_doc.journal_entry,
+		gle = frappe.get_all(
+			"GL Entry",
+			filters={"voucher_type": "Journal Entry", "voucher_no": adj_doc.journal_entry},
+			fields=["account", "debit", "credit"],
+			order_by="account",
+			as_list=True,
 		)
 
 		self.assertSequenceEqual(gle, expected_gle)
@@ -298,6 +297,43 @@ class TestAssetValueAdjustment(IntegrationTestCase):
 		self.assertEqual(difference_amount, -60000)
 		asset_doc.load_from_db()
 		self.assertEqual(asset_doc.finance_books[0].value_after_depreciation, 40000.0)
+
+	def test_expected_value_after_useful_life(self):
+		pr = make_purchase_receipt(item_code="Macbook Pro", qty=1, rate=100000.0, location="Test Location")
+
+		asset_name = frappe.db.get_value("Asset", {"purchase_receipt": pr.name}, "name")
+		asset_doc = frappe.get_doc("Asset", asset_name)
+		asset_doc.calculate_depreciation = 1
+		asset_doc.available_for_use_date = "2023-01-15"
+		asset_doc.purchase_date = "2023-01-15"
+
+		asset_doc.append(
+			"finance_books",
+			{
+				"expected_value_after_useful_life": 5000,
+				"salvage_value_percentage": 5,
+				"depreciation_method": "Straight Line",
+				"total_number_of_depreciations": 12,
+				"frequency_of_depreciation": 1,
+				"depreciation_start_date": "2023-01-31",
+			},
+		)
+		asset_doc.submit()
+		self.assertEqual(asset_doc.finance_books[0].expected_value_after_useful_life, 5000.0)
+
+		current_asset_value = get_asset_value_after_depreciation(asset_doc.name)
+		adj_doc = make_asset_value_adjustment(
+			asset=asset_doc.name,
+			current_asset_value=current_asset_value,
+			new_asset_value=40000,
+			date="2023-08-21",
+		)
+		adj_doc.submit()
+		difference_amount = adj_doc.new_asset_value - adj_doc.current_asset_value
+		self.assertEqual(difference_amount, -60000)
+		asset_doc.load_from_db()
+		self.assertEqual(asset_doc.finance_books[0].value_after_depreciation, 40000.0)
+		self.assertEqual(asset_doc.finance_books[0].expected_value_after_useful_life, 2000.0)
 
 
 def make_asset_value_adjustment(**args):

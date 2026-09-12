@@ -12,7 +12,7 @@ frappe.query_reports["Accounts Payable Summary"] = {
 		},
 		{
 			fieldname: "report_date",
-			label: __("Posting Date"),
+			label: __("Report Date"),
 			fieldtype: "Date",
 			default: frappe.datetime.get_today(),
 		},
@@ -22,6 +22,13 @@ frappe.query_reports["Accounts Payable Summary"] = {
 			fieldtype: "Select",
 			options: "Posting Date\nDue Date",
 			default: "Due Date",
+		},
+		{
+			fieldname: "age_as_on",
+			label: __("Age as on"),
+			fieldtype: "Select",
+			options: "Report Date\nToday",
+			default: "Report Date",
 		},
 		{
 			fieldname: "range",
@@ -38,15 +45,23 @@ frappe.query_reports["Accounts Payable Summary"] = {
 		{
 			fieldname: "cost_center",
 			label: __("Cost Center"),
-			fieldtype: "Link",
+			fieldtype: "MultiSelectList",
+			get_data: function (txt) {
+				return frappe.db.get_link_options("Cost Center", txt, {
+					company: frappe.query_report.get_filter_value("company"),
+				});
+			},
 			options: "Cost Center",
-			get_query: () => {
-				var company = frappe.query_report.get_filter_value("company");
-				return {
-					filters: {
-						company: company,
-					},
-				};
+		},
+		{
+			fieldname: "project",
+			label: __("Project"),
+			fieldtype: "MultiSelectList",
+			options: "Project",
+			get_data: function (txt) {
+				return frappe.db.get_link_options("Project", txt, {
+					company: frappe.query_report.get_filter_value("company"),
+				});
 			},
 		},
 		{
@@ -85,8 +100,11 @@ frappe.query_reports["Accounts Payable Summary"] = {
 		{
 			fieldname: "supplier_group",
 			label: __("Supplier Group"),
-			fieldtype: "Link",
+			fieldtype: "MultiSelectList",
 			options: "Supplier Group",
+			get_data: function (txt) {
+				return frappe.db.get_link_options("Supplier Group", txt);
+			},
 		},
 		{
 			fieldname: "based_on_payment_terms",
@@ -98,13 +116,24 @@ frappe.query_reports["Accounts Payable Summary"] = {
 			label: __("Revaluation Journals"),
 			fieldtype: "Check",
 		},
+		{
+			fieldname: "show_gl_balance",
+			label: __("Show GL Balance"),
+			fieldtype: "Check",
+		},
 	],
+	collapsible_filters: true,
+	separate_check_filters: true,
 
 	onload: function (report) {
 		report.page.add_inner_button(__("Accounts Payable"), function () {
 			var filters = report.get_values();
 			frappe.set_route("query-report", "Accounts Payable", { company: filters.company });
 		});
+
+		if (frappe.boot.sysdefaults.default_ageing_range) {
+			report.set_filter_value("range", frappe.boot.sysdefaults.default_ageing_range);
+		}
 	},
 };
 

@@ -24,10 +24,13 @@ def get_data():
 				"label": _("Fulfillment"),
 				"items": ["Sales Invoice", "Pick List", "Delivery Note", "Maintenance Visit"],
 			},
+			{"label": _("Proforma"), "items": ["Proforma Invoice"]},
 			{"label": _("Purchasing"), "items": ["Material Request", "Purchase Order"]},
 			{"label": _("Projects"), "items": ["Project"]},
 			{"label": _("Manufacturing"), "items": ["Work Order", "BOM", "Blanket Order"]},
 			{"label": _("Reference"), "items": ["Quotation", "Auto Repeat", "Stock Reservation Entry"]},
 			{"label": _("Payment"), "items": ["Payment Entry", "Payment Request", "Journal Entry"]},
+			{"label": _("Schedule"), "items": ["Delivery Schedule Item"]},
+			{"label": _("Subcontracting Inward"), "items": ["Subcontracting Inward Order"]},
 		],
 	}

@@ -8,7 +8,7 @@ from frappe.query_builder import Criterion, Tuple
 from frappe.query_builder.functions import IfNull
 from frappe.utils import getdate, nowdate
 from frappe.utils.nestedset import get_descendants_of
-from pypika.terms import LiteralValue
+from pypika.terms import Bracket, LiteralValue
 
 from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import (
 	get_accounting_dimensions,
@@ -69,19 +69,23 @@ class PartyLedgerSummaryReport:
 		party_type = self.filters.party_type
 
 		doctype = qb.DocType(party_type)
+
+		party_details_fields = [
+			doctype.name.as_("party"),
+			f"{scrub(party_type)}_name",
+			f"{scrub(party_type)}_group",
+		]
+
+		if party_type == "Customer":
+			party_details_fields.append(doctype.territory)
+
 		conditions = self.get_party_conditions(doctype)
-		query = (
-			qb.from_(doctype)
-			.select(doctype.name.as_("party"), f"{scrub(party_type)}_name")
-			.where(Criterion.all(conditions))
-		)
+		query = qb.from_(doctype).select(*party_details_fields).where(Criterion.all(conditions))
 
 		from frappe.desk.reportview import build_match_conditions
 
-		match_conditions = build_match_conditions(party_type)
-
-		if match_conditions:
-			query = query.where(LiteralValue(match_conditions))
+		if match_conditions := build_match_conditions(party_type):
+			query = query.where(Bracket(LiteralValue(match_conditions)))
 
 		party_details = query.run(as_dict=True)
 
@@ -153,6 +157,31 @@ class PartyLedgerSummaryReport:
 
 		credit_or_debit_note = "Credit Note" if self.filters.party_type == "Customer" else "Debit Note"
 
+		if self.filters.party_type == "Customer":
+			columns += [
+				{
+					"label": _("Customer Group"),
+					"fieldname": "customer_group",
+					"fieldtype": "Link",
+					"options": "Customer Group",
+				},
+				{
+					"label": _("Territory"),
+					"fieldname": "territory",
+					"fieldtype": "Link",
+					"options": "Territory",
+				},
+			]
+		else:
+			columns += [
+				{
+					"label": _("Supplier Group"),
+					"fieldname": "supplier_group",
+					"fieldtype": "Link",
+					"options": "Supplier Group",
+				}
+			]
+
 		columns += [
 			{
 				"label": _("Opening Balance"),
@@ -210,38 +239,11 @@ class PartyLedgerSummaryReport:
 				"fieldtype": "Link",
 				"options": "Currency",
 				"width": 50,
+				"hidden": 1,
 			},
 		]
 
-		# Hidden columns for handling 'User Permissions'
-		if self.filters.party_type == "Customer":
-			columns += [
-				{
-					"label": _("Territory"),
-					"fieldname": "territory",
-					"fieldtype": "Link",
-					"options": "Territory",
-					"hidden": 1,
-				},
-				{
-					"label": _("Customer Group"),
-					"fieldname": "customer_group",
-					"fieldtype": "Link",
-					"options": "Customer Group",
-					"hidden": 1,
-				},
-			]
-		else:
-			columns += [
-				{
-					"label": _("Supplier Group"),
-					"fieldname": "supplier_group",
-					"fieldtype": "Link",
-					"options": "Supplier Group",
-					"hidden": 1,
-				}
-			]
-
+		columns.append({"label": _("Dr/Cr"), "fieldname": "dr_or_cr", "fieldtype": "Data", "width": 100})
 		return columns
 
 	def get_data(self):
@@ -275,12 +277,25 @@ class PartyLedgerSummaryReport:
 			if gle.posting_date < self.filters.from_date or gle.is_opening == "Yes":
 				self.party_data[gle.party].opening_balance += amount
 			else:
-				if amount > 0:
-					self.party_data[gle.party].invoiced_amount += amount
-				elif gle.voucher_no in self.return_invoices:
-					self.party_data[gle.party].return_amount -= amount
+				# Cache the party data reference to avoid repeated dictionary lookups
+				party_data = self.party_data[gle.party]
+
+				# Check if this is a direct return invoice (most specific condition first)
+				if gle.voucher_no in self.return_invoices:
+					party_data.return_amount -= amount
+				# Check if this entry is against a return invoice
+				elif gle.against_voucher in self.return_invoices:
+					# For entries against return invoices, positive amounts are payments
+					if amount > 0:
+						party_data.paid_amount -= amount
+					else:
+						party_data.invoiced_amount += amount
+				# Normal transaction logic
 				else:
-					self.party_data[gle.party].paid_amount -= amount
+					if amount > 0:
+						party_data.invoiced_amount += amount
+					else:
+						party_data.paid_amount -= amount
 
 		out = []
 		for party, row in self.party_data.items():
@@ -289,7 +304,7 @@ class PartyLedgerSummaryReport:
 				or row.invoiced_amount
 				or row.paid_amount
 				or row.return_amount
-				or row.closing_amount
+				or row.closing_balance  # Fixed typo from closing_amount to closing_balance
 			):
 				total_party_adjustment = sum(
 					amount for amount in self.party_adjustment_details.get(party, {}).values()
@@ -299,6 +314,13 @@ class PartyLedgerSummaryReport:
 				adjustments = self.party_adjustment_details.get(party, {})
 				for account in self.party_adjustment_accounts:
 					row["adj_" + scrub(account)] = adjustments.get(account, 0)
+
+				if self.filters.party_type == "Customer":
+					balance = row.get("closing_balance", 0)
+					row["dr_or_cr"] = "Dr" if balance > 0 else "Cr" if balance < 0 else ""
+				else:
+					balance = row.get("closing_balance", 0)
+					row["dr_or_cr"] = "Cr" if balance > 0 else "Dr" if balance < 0 else ""
 
 				out.append(row)
 
@@ -313,6 +335,7 @@ class PartyLedgerSummaryReport:
 				gle.party,
 				gle.voucher_type,
 				gle.voucher_no,
+				gle.against_voucher,  # For handling returned invoices (Credit/Debit Notes)
 				gle.debit,
 				gle.credit,
 				gle.is_opening,
@@ -326,6 +349,28 @@ class PartyLedgerSummaryReport:
 				& (gle.party.isin(self.parties))
 			)
 		)
+
+		if self.filters.get("ignore_cr_dr_notes"):
+			system_generated_cr_dr_journals = frappe.db.get_all(
+				"Journal Entry",
+				filters={
+					"company": self.filters.get("company"),
+					"docstatus": 1,
+					"voucher_type": ("in", ["Credit Note", "Debit Note"]),
+					"is_system_generated": 1,
+					"posting_date": ["between", [self.filters.get("from_date"), self.filters.get("to_date")]],
+				},
+				as_list=True,
+			)
+			if system_generated_cr_dr_journals:
+				vouchers_to_ignore = (self.filters.get("voucher_no_not_in") or []) + [
+					x[0] for x in system_generated_cr_dr_journals
+				]
+				self.filters.update({"voucher_no_not_in": vouchers_to_ignore})
+
+		voucher_no_not_in = self.filters.get("voucher_no_not_in", [])
+		if voucher_no_not_in:
+			query = query.where(gle.voucher_no.notin(voucher_no_not_in))
 
 		query = self.prepare_conditions(query)
 

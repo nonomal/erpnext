@@ -5,7 +5,7 @@
 import frappe
 from frappe import _
 from frappe.utils import flt
-from pypika import Order
+from pypika.terms import Bracket, LiteralValue
 
 import erpnext
 from erpnext.accounts.report.item_wise_sales_register.item_wise_sales_register import (
@@ -16,7 +16,7 @@ from erpnext.accounts.report.item_wise_sales_register.item_wise_sales_register i
 	get_group_by_and_display_fields,
 	get_tax_accounts,
 )
-from erpnext.accounts.report.utils import get_query_columns, get_values_for_columns
+from erpnext.accounts.report.utils import get_values_for_columns
 
 
 def execute(filters=None):
@@ -32,6 +32,7 @@ def _execute(filters=None, additional_table_columns=None):
 
 	item_list = get_items(filters, additional_table_columns)
 	aii_account_map = get_aii_accounts()
+	default_taxes = {}
 	if item_list:
 		itemised_tax, tax_columns = get_tax_accounts(
 			item_list,
@@ -40,16 +41,9 @@ def _execute(filters=None, additional_table_columns=None):
 			doctype="Purchase Invoice",
 			tax_doctype="Purchase Taxes and Charges",
 		)
-
-		scrubbed_tax_fields = {}
-
 		for tax in tax_columns:
-			scrubbed_tax_fields.update(
-				{
-					tax + " Rate": frappe.scrub(tax + " Rate"),
-					tax + " Amount": frappe.scrub(tax + " Amount"),
-				}
-			)
+			default_taxes[f"{tax}_rate"] = 0
+			default_taxes[f"{tax}_amount"] = 0
 
 	po_pr_map = get_purchase_receipts_against_purchase_order(item_list)
 
@@ -96,15 +90,19 @@ def _execute(filters=None, additional_table_columns=None):
 		}
 
 		total_tax = 0
-		for tax in tax_columns:
-			item_tax = itemised_tax.get(d.name, {}).get(tax, {})
+		total_other_charges = 0
+		row.update(default_taxes.copy())
+		for tax, details in itemised_tax.get(d.name, {}).items():
 			row.update(
 				{
-					scrubbed_tax_fields[tax + " Rate"]: item_tax.get("tax_rate", 0),
-					scrubbed_tax_fields[tax + " Amount"]: item_tax.get("tax_amount", 0),
+					f"{tax}_rate": details.get("tax_rate", 0),
+					f"{tax}_amount": details.get("tax_amount", 0),
 				}
 			)
-			total_tax += flt(item_tax.get("tax_amount"))
+			if details.get("is_other_charges"):
+				total_other_charges += flt(details.get("tax_amount"))
+			else:
+				total_tax += flt(details.get("tax_amount"))
 
 		row.update(
 			{"total_tax": total_tax, "total": d.base_net_amount + total_tax, "currency": company_currency}
@@ -178,7 +176,7 @@ def get_columns(additional_table_columns, filters):
 				"fieldname": "invoice",
 				"fieldtype": "Link",
 				"options": "Purchase Invoice",
-				"width": 120,
+				"width": 150,
 			},
 			{"label": _("Posting Date"), "fieldname": "posting_date", "fieldtype": "Date", "width": 120},
 		]
@@ -310,8 +308,8 @@ def apply_conditions(query, pi, pii, filters):
 
 def get_items(filters, additional_table_columns):
 	doctype = "Purchase Invoice"
-	pi = frappe.qb.DocType(doctype)
-	pii = frappe.qb.DocType(f"{doctype} Item")
+	pi = frappe.qb.DocType("Purchase Invoice")
+	pii = frappe.qb.DocType("Purchase Invoice Item")
 	Item = frappe.qb.DocType("Item")
 	query = (
 		frappe.qb.from_(pi)
@@ -331,6 +329,7 @@ def get_items(filters, additional_table_columns):
 			pi.unrealized_profit_loss_account,
 			pii.item_code,
 			pii.description,
+			pii.item_name,
 			pii.item_group,
 			pii.item_name.as_("pi_item_name"),
 			pii.item_group.as_("pi_item_group"),
@@ -368,19 +367,16 @@ def get_items(filters, additional_table_columns):
 
 	from frappe.desk.reportview import build_match_conditions
 
-	query, params = query.walk()
-	match_conditions = build_match_conditions(doctype)
+	if match_conditions := build_match_conditions(doctype):
+		query = query.where(Bracket(LiteralValue(match_conditions)))
 
-	if match_conditions:
-		query += " and " + match_conditions
+	query = apply_order_by_conditions(doctype, query, filters)
 
-	query = apply_order_by_conditions(query, pi, pii, filters)
-
-	return frappe.db.sql(query, params, as_dict=True)
+	return query.run(as_dict=True)
 
 
 def get_aii_accounts():
-	return dict(frappe.db.sql("select name, stock_received_but_not_billed from tabCompany"))
+	return dict(frappe.get_all("Company", fields=["name", "stock_received_but_not_billed"], as_list=True))
 
 
 def get_purchase_receipts_against_purchase_order(item_list):
@@ -388,16 +384,11 @@ def get_purchase_receipts_against_purchase_order(item_list):
 	po_item_rows = list(set(d.po_detail for d in item_list))
 
 	if po_item_rows:
-		purchase_receipts = frappe.db.sql(
-			"""
-			select parent, purchase_order_item
-			from `tabPurchase Receipt Item`
-			where docstatus=1 and purchase_order_item in (%s)
-			group by purchase_order_item, parent
-		"""
-			% (", ".join(["%s"] * len(po_item_rows))),
-			tuple(po_item_rows),
-			as_dict=1,
+		purchase_receipts = frappe.get_all(
+			"Purchase Receipt Item",
+			filters={"docstatus": 1, "purchase_order_item": ["in", po_item_rows]},
+			fields=["parent", "purchase_order_item"],
+			group_by="purchase_order_item, parent",
 		)
 
 		for pr in purchase_receipts:

@@ -37,7 +37,7 @@ class PartyLink(Document):
 		)
 		if existing_party_link:
 			frappe.throw(
-				_("{} {} is already linked with {} {}").format(
+				_("{0} {1} is already linked with {2} {3}").format(
 					self.primary_role,
 					bold(self.primary_party),
 					self.secondary_role,
@@ -50,7 +50,7 @@ class PartyLink(Document):
 		)
 		if existing_party_link:
 			frappe.throw(
-				_("{} {} is already linked with another {}").format(
+				_("{0} {1} is already linked with another {2}").format(
 					self.secondary_role, self.secondary_party, existing_party_link[0]
 				)
 			)
@@ -60,20 +60,20 @@ class PartyLink(Document):
 		)
 		if existing_party_link:
 			frappe.throw(
-				_("{} {} is already linked with another {}").format(
+				_("{0} {1} is already linked with another {2}").format(
 					self.primary_role, self.primary_party, existing_party_link[0]
 				)
 			)
 
 
 @frappe.whitelist()
-def create_party_link(primary_role, primary_party, secondary_party):
+def create_party_link(primary_role: str, primary_party: str, secondary_party: str):
 	party_link = frappe.new_doc("Party Link")
 	party_link.primary_role = primary_role
 	party_link.primary_party = primary_party
 	party_link.secondary_role = "Customer" if primary_role == "Supplier" else "Supplier"
 	party_link.secondary_party = secondary_party
 
-	party_link.save(ignore_permissions=True)
+	party_link.save()
 
 	return party_link

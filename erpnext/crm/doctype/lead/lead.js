@@ -2,8 +2,9 @@
 // License: GNU General Public License v3. See license.txt
 
 frappe.provide("erpnext");
-cur_frm.email_field = "email_id";
-
+if (this.frm) {
+	this.frm.email_field = "email_id";
+}
 erpnext.LeadController = class LeadController extends frappe.ui.form.Controller {
 	setup() {
 		this.frm.make_methods = {
@@ -87,14 +88,14 @@ erpnext.LeadController = class LeadController extends frappe.ui.form.Controller 
 
 	make_customer() {
 		frappe.model.open_mapped_doc({
-			method: "erpnext.crm.doctype.lead.lead.make_customer",
+			method: "erpnext.crm.doctype.lead.mapper.make_customer",
 			frm: this.frm,
 		});
 	}
 
 	make_quotation() {
 		frappe.model.open_mapped_doc({
-			method: "erpnext.crm.doctype.lead.lead.make_quotation",
+			method: "erpnext.crm.doctype.lead.mapper.make_quotation",
 			frm: this.frm,
 		});
 	}
@@ -170,7 +171,7 @@ erpnext.LeadController = class LeadController extends frappe.ui.form.Controller 
 						callback: function (r) {
 							if (!r.exc) {
 								frappe.model.open_mapped_doc({
-									method: "erpnext.crm.doctype.lead.lead.make_opportunity",
+									method: "erpnext.crm.doctype.lead.mapper.make_opportunity",
 									frm: frm,
 								});
 							}
@@ -183,7 +184,7 @@ erpnext.LeadController = class LeadController extends frappe.ui.form.Controller 
 			d.show();
 		} else {
 			frappe.model.open_mapped_doc({
-				method: "erpnext.crm.doctype.lead.lead.make_opportunity",
+				method: "erpnext.crm.doctype.lead.mapper.make_opportunity",
 				frm: frm,
 			});
 		}
@@ -239,4 +240,6 @@ erpnext.LeadController = class LeadController extends frappe.ui.form.Controller 
 	}
 };
 
-extend_cscript(cur_frm.cscript, new erpnext.LeadController({ frm: cur_frm }));
+if (cur_frm) {
+	extend_cscript(cur_frm.cscript, new erpnext.LeadController({ frm: cur_frm }));
+}

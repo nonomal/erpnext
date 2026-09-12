@@ -8,8 +8,6 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt
 
-from erpnext.setup.utils import get_exchange_rate
-
 
 def execute(filters=None):
 	if not filters:
@@ -54,16 +52,24 @@ def get_data(filters):
 			sq_item.request_for_quotation,
 			sq_item.lead_time_days,
 			sq.supplier.as_("supplier_name"),
+			sq.status.as_("supplier_quotation_status"),
 			sq.valid_till,
 		)
 		.where(
 			(sq_item.parent == sq.name)
-			& (sq_item.docstatus < 2)
 			& (sq.company == filters.get("company"))
 			& (sq.transaction_date.between(filters.get("from_date"), filters.get("to_date")))
 		)
 		.orderby(sq.transaction_date, sq_item.item_code)
 	)
+
+	# blank -> Draft + Submitted, else filter to the chosen docstatus
+	if filters.get("status") == "Draft":
+		query = query.where(sq_item.docstatus == 0)
+	elif filters.get("status") == "Submitted":
+		query = query.where(sq_item.docstatus == 1)
+	else:
+		query = query.where(sq_item.docstatus < 2)
 
 	if filters.get("item_code"):
 		query = query.where(sq_item.item_code == filters.get("item_code"))
@@ -76,6 +82,11 @@ def get_data(filters):
 
 	if filters.get("supplier"):
 		query = query.where(sq.supplier.isin(filters.get("supplier")))
+
+	if filters.get("order_status") == "Not Ordered":
+		query = query.where(sq.status.notin(["Partially Ordered", "Ordered"]))
+	elif filters.get("order_status"):
+		query = query.where(sq.status == filters.get("order_status"))
 
 	if not filters.get("include_expired"):
 		query = query.where(sq.status != "Expired")
@@ -104,6 +115,7 @@ def prepare_data(supplier_quotation_data, filters):
 			else data.get("item_code"),  # leave blank if group by field
 			"supplier_name": "" if group_by_field == "supplier_name" else data.get("supplier_name"),
 			"quotation": data.get("parent"),
+			"order_status": get_order_status(data.get("supplier_quotation_status")),
 			"qty": data.get("qty"),
 			"price": flt(data.get("amount"), float_precision),
 			"uom": data.get("uom"),
@@ -157,6 +169,10 @@ def prepare_data(supplier_quotation_data, filters):
 		chart_data = prepare_chart_data(suppliers, qty_list, supplier_qty_price_map)
 
 	return out, chart_data
+
+
+def get_order_status(status):
+	return status if status in ("Partially Ordered", "Ordered") else "Not Ordered"
 
 
 def prepare_chart_data(suppliers, qty_list, supplier_qty_price_map):
@@ -260,6 +276,12 @@ def get_columns(filters):
 			"options": "Supplier Quotation",
 			"width": 200,
 		},
+		{
+			"fieldname": "order_status",
+			"label": _("Order Status"),
+			"fieldtype": "Data",
+			"width": 130,
+		},
 		{"fieldname": "valid_till", "label": _("Valid Till"), "fieldtype": "Date", "width": 100},
 		{
 			"fieldname": "lead_time_days",
@@ -284,20 +306,21 @@ def get_columns(filters):
 
 
 def get_message():
-	return """<span class="indicator">
-		Valid till : &nbsp;&nbsp;
+	return f"""<span class="indicator">
+		{_("Valid Till")}:&nbsp;&nbsp;
 		</span>
 		<span class="indicator orange">
-		Expires in a week or less
+		{_("Expires in a week or less")}
 		</span>
 		&nbsp;&nbsp;
 		<span class="indicator red">
-		Expires today / Already Expired
+		{_("Expires today or already expired")}
 		</span>"""
 
 
 @frappe.whitelist()
-def set_default_supplier(item_code, supplier, company):
+def set_default_supplier(item_code: str, supplier: str, company: str):
+	frappe.has_permission("Item", "write", doc=item_code, throw=True)
 	frappe.db.set_value(
 		"Item Default",
 		{"parent": item_code, "company": company},

@@ -7,10 +7,6 @@ from erpnext.controllers.taxes_and_totals import get_itemised_tax
 
 
 def update_itemised_tax_data(doc):
-	# maybe this should be a standard function rather than a regional one
-	if not doc.taxes:
-		return
-
 	if not doc.items:
 		return
 
@@ -18,7 +14,30 @@ def update_itemised_tax_data(doc):
 	if not meta.has_field("tax_rate"):
 		return
 
-	itemised_tax = get_itemised_tax(doc.taxes)
+	itemised_tax = get_itemised_tax(doc)
+
+	def determine_if_export(doc):
+		if doc.doctype != "Sales Invoice":
+			return False
+
+		if not doc.customer_address:
+			if not doc.total_taxes_and_charges:
+				frappe.msgprint(
+					_("Please set Customer Address to determine if the transaction is an export."),
+					alert=True,
+				)
+
+			return False
+
+		company_country = frappe.get_cached_value("Company", doc.company, "country")
+		customer_country = frappe.db.get_value("Address", doc.customer_address, "country")
+
+		if company_country != customer_country:
+			return True
+
+		return False
+
+	is_export = determine_if_export(doc)
 
 	for row in doc.items:
 		tax_rate, tax_amount = 0.0, 0.0
@@ -29,6 +48,9 @@ def update_itemised_tax_data(doc):
 				_tax_rate = flt(tax.get("tax_rate", 0), row.precision("tax_rate"))
 				tax_amount += flt((row.net_amount * _tax_rate) / 100, row.precision("tax_amount"))
 				tax_rate += _tax_rate
+
+		if not tax_rate or row.get("is_zero_rated"):
+			row.is_zero_rated = is_export or frappe.get_cached_value("Item", row.item_code, "is_zero_rated")
 
 		row.tax_rate = flt(tax_rate, row.precision("tax_rate"))
 		row.tax_amount = flt(tax_amount, row.precision("tax_amount"))
@@ -55,9 +77,9 @@ def get_account_currency(account):
 def get_tax_accounts(company):
 	"""Get the list of tax accounts for a specific company."""
 	tax_accounts_dict = frappe._dict()
-	tax_accounts_list = frappe.get_all("UAE VAT Account", filters={"parent": company}, fields=["Account"])
+	tax_accounts_list = frappe.get_all("UAE VAT Account", filters={"parent": company}, fields=["account"])
 
-	if not tax_accounts_list and not frappe.flags.in_test:
+	if not tax_accounts_list and not frappe.in_test:
 		frappe.throw(_('Please set Vat Accounts for Company: "{0}" in UAE VAT Settings').format(company))
 	for tax_account in tax_accounts_list:
 		for _account, name in tax_account.items():
@@ -118,7 +140,9 @@ def update_totals(vat_tax, base_vat_tax, doc):
 
 	doc.in_words = money_in_words(doc.grand_total, doc.currency)
 	doc.base_in_words = money_in_words(doc.base_grand_total, erpnext.get_company_currency(doc.company))
-	doc.set_payment_schedule()
+	from erpnext.accounts.services.payment_schedule import PaymentScheduleService
+
+	PaymentScheduleService(doc).set_payment_schedule()
 
 
 def make_regional_gl_entries(gl_entries, doc):

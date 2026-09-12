@@ -16,7 +16,7 @@ frappe.ui.form.on("Quotation", {
 			frm.set_query("quotation_to", function () {
 				return {
 					filters: {
-						name: ["in", ["Customer", "Lead", "Prospect"]],
+						name: ["in", ["Customer", "Lead", "Prospect", "CRM Deal"]],
 					},
 				};
 			});
@@ -32,6 +32,15 @@ frappe.ui.form.on("Quotation", {
 					voucher_type: doc.doctype,
 					voucher_no: ["in", [doc.name, ""]],
 					is_cancelled: 0,
+				},
+			};
+		});
+
+		frm.set_query("warehouse", "items", (doc, cdt, cdn) => {
+			return {
+				filters: {
+					company: doc.company,
+					is_group: 0,
 				},
 			};
 		});
@@ -117,28 +126,35 @@ erpnext.selling.QuotationController = class QuotationController extends erpnext.
 
 		if (doc.docstatus == 1 && !["Lost", "Ordered"].includes(doc.status)) {
 			if (
-				frappe.boot.sysdefaults.allow_sales_order_creation_for_expired_quotation ||
-				!doc.valid_till ||
-				frappe.datetime.get_diff(doc.valid_till, frappe.datetime.get_today()) >= 0
+				frappe.model.can_create("Sales Order") &&
+				(frappe.boot.sysdefaults.allow_sales_order_creation_for_expired_quotation ||
+					!doc.valid_till ||
+					frappe.datetime.get_diff(doc.valid_till, frappe.datetime.get_today()) >= 0)
 			) {
 				this.frm.add_custom_button(__("Sales Order"), () => this.make_sales_order(), __("Create"));
+				cur_frm.page.set_inner_btn_group_as_primary(__("Create"));
+				this.frm.add_custom_button(__("Update Items"), () => {
+					erpnext.utils.update_child_items({
+						frm: this.frm,
+						child_docname: "items",
+						cannot_add_row: false,
+					});
+				});
 			}
 
-			if (doc.status !== "Ordered") {
+			if (doc.status !== "Ordered" && this.frm.has_perm("write")) {
 				this.frm.add_custom_button(__("Set as Lost"), () => {
 					this.frm.trigger("set_as_lost_dialog");
 				});
 			}
-
-			cur_frm.page.set_inner_btn_group_as_primary(__("Create"));
 		}
 
-		if (this.frm.doc.docstatus === 0) {
+		if (this.frm.doc.docstatus === 0 && frappe.model.can_read("Opportunity")) {
 			this.frm.add_custom_button(
 				__("Opportunity"),
 				function () {
 					erpnext.utils.map_current_doc({
-						method: "erpnext.crm.doctype.opportunity.opportunity.make_quotation",
+						method: "erpnext.crm.doctype.opportunity.mapper.make_quotation",
 						source_doctype: "Opportunity",
 						target: me.frm,
 						setters: [
@@ -179,7 +195,7 @@ erpnext.selling.QuotationController = class QuotationController extends erpnext.
 			this.show_alternative_items_dialog();
 		} else {
 			frappe.model.open_mapped_doc({
-				method: "erpnext.selling.doctype.quotation.quotation.make_sales_order",
+				method: "erpnext.selling.doctype.quotation.mapper.make_sales_order",
 				frm: me.frm,
 			});
 		}
@@ -188,7 +204,7 @@ erpnext.selling.QuotationController = class QuotationController extends erpnext.
 	set_dynamic_field_label() {
 		if (this.frm.doc.quotation_to == "Customer") {
 			this.frm.set_df_property("party_name", "label", "Customer");
-			this.frm.fields_dict.party_name.get_query = null;
+			this.frm.fields_dict.party_name.get_query = erpnext.queries.customer;
 		} else if (this.frm.doc.quotation_to == "Lead") {
 			this.frm.set_df_property("party_name", "label", "Lead");
 			this.frm.fields_dict.party_name.get_query = function () {
@@ -251,6 +267,7 @@ erpnext.selling.QuotationController = class QuotationController extends erpnext.
 				lead: this.frm.doc.party_name,
 				posting_date: this.frm.doc.transaction_date,
 				company: this.frm.doc.company,
+				doctype: this.frm.doc.doctype,
 			},
 			callback: function (r) {
 				if (r.message) {
@@ -345,7 +362,7 @@ erpnext.selling.QuotationController = class QuotationController extends erpnext.
 			],
 			primary_action: function () {
 				frappe.model.open_mapped_doc({
-					method: "erpnext.selling.doctype.quotation.quotation.make_sales_order",
+					method: "erpnext.selling.doctype.quotation.mapper.make_sales_order",
 					frm: me.frm,
 					args: {
 						selected_items: dialog.fields_dict.alternative_items.grid.get_selected_children(),
@@ -363,26 +380,6 @@ erpnext.selling.QuotationController = class QuotationController extends erpnext.
 			</p>`
 		);
 		dialog.show();
-	}
-
-	currency() {
-		super.currency();
-		let me = this;
-		const company_currency = this.get_company_currency();
-		if (this.frm.doc.currency && this.frm.doc.currency !== company_currency) {
-			this.get_exchange_rate(
-				this.frm.doc.transaction_date,
-				this.frm.doc.currency,
-				company_currency,
-				function (exchange_rate) {
-					if (exchange_rate != me.frm.doc.conversion_rate) {
-						me.set_margin_amount_based_on_currency(exchange_rate);
-						me.set_actual_charges_based_on_currency(exchange_rate);
-						me.frm.set_value("conversion_rate", exchange_rate);
-					}
-				}
-			);
-		}
 	}
 
 	disable_customer_if_creating_from_opportunity(doc) {

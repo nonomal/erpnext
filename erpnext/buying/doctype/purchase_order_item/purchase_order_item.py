@@ -18,7 +18,6 @@ class PurchaseOrderItem(Document):
 		actual_qty: DF.Float
 		against_blanket_order: DF.Check
 		amount: DF.Currency
-		apply_tds: DF.Check
 		base_amount: DF.Currency
 		base_net_amount: DF.Currency
 		base_net_rate: DF.Currency
@@ -30,6 +29,7 @@ class PurchaseOrderItem(Document):
 		blanket_order_rate: DF.Currency
 		bom: DF.Link | None
 		brand: DF.Link | None
+		closed: DF.Check
 		company_total_stock: DF.Float
 		conversion_factor: DF.Float
 		cost_center: DF.Link | None
@@ -44,7 +44,6 @@ class PurchaseOrderItem(Document):
 		fg_item_qty: DF.Float
 		from_warehouse: DF.Link | None
 		image: DF.Attach | None
-		include_exploded_items: DF.Check
 		is_fixed_asset: DF.Check
 		is_free_item: DF.Check
 		item_code: DF.Link
@@ -85,7 +84,7 @@ class PurchaseOrderItem(Document):
 		stock_qty: DF.Float
 		stock_uom: DF.Link
 		stock_uom_rate: DF.Currency
-		subcontracted_quantity: DF.Float
+		subcontracted_qty: DF.Float
 		supplier_part_no: DF.Data | None
 		supplier_quotation: DF.Link | None
 		supplier_quotation_item: DF.Link | None

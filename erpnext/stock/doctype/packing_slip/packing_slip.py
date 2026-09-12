@@ -4,6 +4,7 @@
 
 import frappe
 from frappe import _
+from frappe.query_builder.functions import Sum
 from frappe.utils import cint, flt
 
 from erpnext.controllers.status_updater import StatusUpdater
@@ -79,15 +80,13 @@ class PackingSlip(StatusUpdater):
 		"""Raises an exception if the `Delivery Note` status is not Draft"""
 
 		if cint(frappe.db.get_value("Delivery Note", self.delivery_note, "docstatus")) != 0:
-			frappe.throw(
-				_("A Packing Slip can only be created for Draft Delivery Note.").format(self.delivery_note)
-			)
+			frappe.throw(_("A Packing Slip can only be created for a Draft Delivery Note."))
 
 	def validate_case_nos(self):
 		"""Validate if case nos overlap. If they do, recommend next case no."""
 
 		if cint(self.from_case_no) <= 0:
-			frappe.throw(_("The 'From Package No.' field must neither be empty nor it's value less than 1."))
+			frappe.throw(_("The 'From Package No.' field must not be empty or have a value less than 1."))
 		elif not self.to_case_no:
 			self.to_case_no = self.from_case_no
 		elif cint(self.to_case_no) < cint(self.from_case_no):
@@ -128,11 +127,11 @@ class PackingSlip(StatusUpdater):
 						item.idx
 					)
 				)
-
+			DocType = frappe.qb.DocType("Delivery Note Item" if item.dn_detail else "Packed Item")
 			remaining_qty = frappe.db.get_value(
 				"Delivery Note Item" if item.dn_detail else "Packed Item",
 				{"name": item.dn_detail or item.pi_detail, "docstatus": 0},
-				["sum(qty - packed_qty)"],
+				Sum(DocType.qty - DocType.packed_qty),
 			)
 
 			if remaining_qty is None:
@@ -174,7 +173,9 @@ class PackingSlip(StatusUpdater):
 		return (
 			cint(
 				frappe.db.get_value(
-					"Packing Slip", {"delivery_note": self.delivery_note, "docstatus": 1}, ["max(to_case_no)"]
+					"Packing Slip",
+					{"delivery_note": self.delivery_note, "docstatus": 1},
+					[{"MAX": "to_case_no"}],
 				)
 			)
 			+ 1
@@ -203,14 +204,25 @@ class PackingSlip(StatusUpdater):
 
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
-def item_details(doctype, txt, searchfield, start, page_len, filters):
-	from erpnext.controllers.queries import get_match_cond
+def item_details(doctype: str, txt: str, searchfield: str, start: int, page_len: int, filters: dict):
+	item = frappe.qb.DocType("Item")
+	dn_item = frappe.qb.DocType("Delivery Note Item")
+	delivery_note = (filters or {}).get("delivery_note")
 
-	return frappe.db.sql(
-		"""select name, item_name, description from `tabItem`
-				where name in ( select item_code FROM `tabDelivery Note Item`
-	 						where parent= {})
-	 			and {} like "{}" {}
-	 			limit  {} offset {} """.format("%s", searchfield, "%s", get_match_cond(doctype), "%s", "%s"),
-		((filters or {}).get("delivery_note"), "%%%s%%" % txt, page_len, start),
+	query = frappe.qb.get_query(
+		"Item",
+		fields=["name", "item_name", "description"],
+		ignore_permissions=False,
+	)
+
+	return (
+		query.where(
+			item.name.isin(
+				frappe.qb.from_(dn_item).select(dn_item.item_code).where(dn_item.parent == delivery_note)
+			)
+			& item[searchfield].like(f"%{txt}%")
+		)
+		.limit(page_len)
+		.offset(start)
+		.run()
 	)

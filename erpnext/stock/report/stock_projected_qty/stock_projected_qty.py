@@ -5,6 +5,7 @@
 import frappe
 from frappe import _
 from frappe.utils import flt, today
+from frappe.utils.nestedset import get_descendants_of
 from pypika.terms import ExistsCriterion
 
 from erpnext.accounts.doctype.pos_invoice.pos_invoice import get_pos_reserved_qty
@@ -21,8 +22,11 @@ def execute(filters=None):
 	columns = get_columns()
 	bin_list = get_bin_list(filters)
 	item_map = get_item_map(filters.get("item_code"), include_uom)
+	item_groups = []
+	if filters.get("item_group"):
+		item_groups.append(filters.item_group)
+		item_groups.extend(get_descendants_of("Item Group", filters.item_group))
 
-	warehouse_company = {}
 	data = []
 	conversion_factors = []
 	for bin in bin_list:
@@ -32,18 +36,10 @@ def execute(filters=None):
 			# likely an item that has reached its end of life
 			continue
 
-		# item = item_map.setdefault(bin.item_code, get_item(bin.item_code))
-		company = warehouse_company.setdefault(
-			bin.warehouse, frappe.db.get_value("Warehouse", bin.warehouse, "company")
-		)
-
 		if filters.brand and filters.brand != item.brand:
 			continue
 
-		elif filters.item_group and filters.item_group != item.item_group:
-			continue
-
-		elif filters.company and filters.company != company:
+		elif item_groups and item.item_group not in item_groups:
 			continue
 
 		re_order_level = re_order_qty = 0
@@ -79,6 +75,7 @@ def execute(filters=None):
 				bin.reserved_qty_for_production_plan,
 				bin.reserved_qty_for_sub_contract,
 				reserved_qty_for_pos,
+				bin.reserved_stock,
 				bin.projected_qty,
 				re_order_level,
 				re_order_qty,
@@ -100,10 +97,11 @@ def get_columns():
 			"fieldname": "item_code",
 			"fieldtype": "Link",
 			"options": "Item",
-			"width": 140,
+			"width": 200,
+			"sticky": "True",
 		},
-		{"label": _("Item Name"), "fieldname": "item_name", "width": 100},
-		{"label": _("Description"), "fieldname": "description", "width": 200},
+		{"label": _("Item Name"), "fieldname": "item_name", "width": 200},
+		{"label": _("Description"), "fieldname": "description", "width": 100},
 		{
 			"label": _("Item Group"),
 			"fieldname": "item_group",
@@ -124,6 +122,7 @@ def get_columns():
 			"fieldtype": "Link",
 			"options": "Warehouse",
 			"width": 120,
+			"sticky": "True",
 		},
 		{
 			"label": _("UOM"),
@@ -196,6 +195,13 @@ def get_columns():
 			"convertible": "qty",
 		},
 		{
+			"label": _("Reserved Stock"),
+			"fieldname": "reserved_stock",
+			"fieldtype": "Float",
+			"width": 100,
+			"convertible": "qty",
+		},
+		{
 			"label": _("Projected Qty"),
 			"fieldname": "projected_qty",
 			"fieldtype": "Float",
@@ -241,6 +247,7 @@ def get_bin_list(filters):
 			bin.reserved_qty_for_production,
 			bin.reserved_qty_for_sub_contract,
 			bin.reserved_qty_for_production_plan,
+			bin.reserved_stock,
 			bin.projected_qty,
 		)
 		.orderby(bin.item_code, bin.warehouse)
@@ -248,6 +255,16 @@ def get_bin_list(filters):
 
 	if filters.item_code:
 		query = query.where(bin.item_code == filters.item_code)
+
+	if filters.company:
+		wh = frappe.qb.DocType("Warehouse")
+		query = query.where(
+			ExistsCriterion(
+				frappe.qb.from_(wh)
+				.select(wh.name)
+				.where((wh.name == bin.warehouse) & (wh.company == filters.company))
+			)
+		)
 
 	if filters.warehouse:
 		warehouse_details = frappe.db.get_value("Warehouse", filters.warehouse, ["lft", "rgt"], as_dict=1)
@@ -277,17 +294,19 @@ def get_item_map(item_code, include_uom):
 	bin = frappe.qb.DocType("Bin")
 	item = frappe.qb.DocType("Item")
 
+	# alive = end_of_life unset / future / MariaDB zero-date '0000-00-00' (an invalid date literal on
+	# postgres, where "not set" is NULL — already covered by IS NULL); zero-date term on MariaDB only.
+	alive = (item.end_of_life > today()) | item.end_of_life.isnull()
+	if frappe.db.db_type != "postgres":
+		alive |= item.end_of_life == "0000-00-00"
+
 	query = (
 		frappe.qb.from_(item)
 		.select(item.name, item.item_name, item.description, item.item_group, item.brand, item.stock_uom)
 		.where(
 			(item.is_stock_item == 1)
 			& (item.disabled == 0)
-			& (
-				(item.end_of_life > today())
-				| (item.end_of_life.isnull())
-				| (item.end_of_life == "0000-00-00")
-			)
+			& alive
 			& (ExistsCriterion(frappe.qb.from_(bin).select(bin.name).where(bin.item_code == item.name)))
 		)
 	)

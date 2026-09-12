@@ -15,8 +15,11 @@ class PickListItem(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
+		actual_qty: DF.Float
 		batch_no: DF.Link | None
+		company_total_stock: DF.Float
 		conversion_factor: DF.Float
+		delivered_qty: DF.Float
 		description: DF.Text | None
 		item_code: DF.Link
 		item_group: DF.Data | None
@@ -36,6 +39,7 @@ class PickListItem(Document):
 		stock_qty: DF.Float
 		stock_reserved_qty: DF.Float
 		stock_uom: DF.Link | None
+		transferred_qty: DF.Float
 		uom: DF.Link | None
 		use_serial_batch_fields: DF.Check
 		warehouse: DF.Link | None

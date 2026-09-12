@@ -17,6 +17,7 @@ class SubcontractingReceiptItem(Document):
 		additional_cost_per_qty: DF.Currency
 		amount: DF.Currency
 		batch_no: DF.Link | None
+		bom_secondary_item: DF.Data | None
 		bom: DF.Link | None
 		brand: DF.Link | None
 		conversion_factor: DF.Float
@@ -25,16 +26,17 @@ class SubcontractingReceiptItem(Document):
 		expense_account: DF.Link | None
 		image: DF.Attach | None
 		include_exploded_items: DF.Check
-		is_scrap_item: DF.Check
 		item_code: DF.Link
 		item_name: DF.Data | None
 		job_card: DF.Link | None
+		landed_cost_voucher_amount: DF.Currency
 		manufacturer: DF.Link | None
 		manufacturer_part_no: DF.Data | None
 		page_break: DF.Check
 		parent: DF.Data
 		parentfield: DF.Data
 		parenttype: DF.Data
+		process_loss_qty: DF.Float
 		project: DF.Link | None
 		purchase_order: DF.Link | None
 		purchase_order_item: DF.Data | None
@@ -51,15 +53,18 @@ class SubcontractingReceiptItem(Document):
 		rm_cost_per_qty: DF.Currency
 		rm_supp_cost: DF.Currency
 		schedule_date: DF.Date | None
-		scrap_cost_per_qty: DF.Float
+		secondary_items_cost_per_qty: DF.Currency
 		serial_and_batch_bundle: DF.Link | None
 		serial_no: DF.SmallText | None
 		service_cost_per_qty: DF.Currency
+		service_expense_account: DF.Link | None
 		stock_uom: DF.Link
 		subcontracting_order: DF.Link | None
 		subcontracting_order_item: DF.Data | None
 		subcontracting_receipt_item: DF.Data | None
+		secondary_item_type: DF.Literal["", "Co-Product", "By-Product", "Scrap", "Additional Finished Good"]
 		use_serial_batch_fields: DF.Check
+		valuation_type: DF.Literal["", "Valuation Rate", "% of Component Cost", "Manual"]
 		warehouse: DF.Link | None
 	# end: auto-generated types
 

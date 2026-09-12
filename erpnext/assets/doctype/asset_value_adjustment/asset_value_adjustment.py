@@ -74,7 +74,7 @@ class AssetValueAdjustment(Document):
 		)
 
 	def on_cancel(self):
-		frappe.get_doc("Journal Entry", self.journal_entry).cancel()
+		self.cancel_asset_revaluation_entry()
 		self.update_asset()
 		add_asset_activity(
 			self.asset,
@@ -167,10 +167,22 @@ class AssetValueAdjustment(Document):
 			if dimension.get("mandatory_for_pl"):
 				debit_entry.update({dimension["fieldname"]: dimension_value})
 
+	def cancel_asset_revaluation_entry(self):
+		if not self.journal_entry:
+			return
+
+		revaluation_entry = frappe.get_doc("Journal Entry", self.journal_entry)
+		if revaluation_entry.docstatus == 1:
+			# Ignore permissions to match Journal Entry submission behavior
+			revaluation_entry.flags.ignore_permissions = True
+			revaluation_entry.flags.via_asset_value_adjustment = True
+			revaluation_entry.cancel()
+
 	def update_asset(self):
 		asset = self.update_asset_value_after_depreciation()
 		note = self.get_adjustment_note()
 		reschedule_depreciation(asset, note)
+		asset.set_status()
 
 	def update_asset_value_after_depreciation(self):
 		difference_amount = self.difference_amount if self.docstatus == 1 else -1 * self.difference_amount
@@ -179,12 +191,21 @@ class AssetValueAdjustment(Document):
 		if asset.calculate_depreciation:
 			for row in asset.finance_books:
 				if cstr(row.finance_book) == cstr(self.finance_book):
-					row.value_after_depreciation += flt(difference_amount)
+					salvage_value_adjustment = (
+						self.get_adjusted_salvage_value_amount(row, difference_amount) or 0
+					)
+					row.expected_value_after_useful_life += salvage_value_adjustment
+					row.value_after_depreciation = row.value_after_depreciation + flt(difference_amount)
 					row.db_update()
 
 		asset.value_after_depreciation += flt(difference_amount)
 		asset.db_update()
 		return asset
+
+	def get_adjusted_salvage_value_amount(self, row, difference_amount):
+		if row.expected_value_after_useful_life:
+			salvage_value_adjustment = (difference_amount * row.salvage_value_percentage) / 100
+			return flt(salvage_value_adjustment if self.docstatus == 1 else -1 * salvage_value_adjustment)
 
 	def get_adjustment_note(self):
 		if self.docstatus == 1:
@@ -206,6 +227,6 @@ class AssetValueAdjustment(Document):
 
 
 @frappe.whitelist()
-def get_value_of_accounting_dimensions(asset_name):
+def get_value_of_accounting_dimensions(asset_name: str):
 	dimension_fields = [*frappe.get_list("Accounting Dimension", pluck="fieldname"), "cost_center"]
 	return frappe.db.get_value("Asset", asset_name, fieldname=dimension_fields, as_dict=True)

@@ -6,7 +6,6 @@ from frappe.utils import (
 )
 
 import erpnext
-from erpnext.accounts.utils import get_fiscal_year
 
 # from erpnext.assets.doctype.asset_depreciation_schedule.deppreciation_schedule_controller import (
 #     _get_total_days,
@@ -38,7 +37,7 @@ class StraightLineMethod(Document):
 		return daily_depr_amount * total_depreciable_days
 
 	def get_daily_depr_amount(self):
-		if cint(frappe.db.get_single_value("Accounts Settings", "calculate_depr_using_total_days")):
+		if cint(frappe.get_single_value("Accounts Settings", "calculate_depr_using_total_days")):
 			return self.depreciable_value / self.total_pending_days
 		else:
 			yearly_depr_amount = self.depreciable_value / self.total_pending_years

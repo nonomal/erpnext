@@ -15,10 +15,7 @@ def execute(filters=None):
 
 def get_data(filters):
 	data = []
-	depreciation_accounts = frappe.db.sql_list(
-		""" select name from tabAccount
-		where ifnull(account_type, '') = 'Depreciation' """
-	)
+	depreciation_accounts = frappe.get_all("Account", filters={"account_type": "Depreciation"}, pluck="name")
 
 	filters_data = [
 		["company", "=", filters.get("company")],
@@ -33,10 +30,8 @@ def get_data(filters):
 		filters_data.append(["against_voucher", "=", filters.get("asset")])
 
 	if filters.get("asset_category"):
-		assets = frappe.db.sql_list(
-			"""select name from tabAsset
-			where asset_category = %s and docstatus=1""",
-			filters.get("asset_category"),
+		assets = frappe.get_all(
+			"Asset", filters={"asset_category": filters.get("asset_category"), "docstatus": 1}, pluck="name"
 		)
 
 		filters_data.append(["against_voucher", "in", assets])
@@ -103,7 +98,7 @@ def get_data(filters):
 					"depreciation_amount": d.debit,
 					"depreciation_date": d.posting_date,
 					"value_after_depreciation": (
-						flt(row.gross_purchase_amount) - flt(row.accumulated_depreciation_amount)
+						flt(row.net_purchase_amount) - flt(row.accumulated_depreciation_amount)
 					),
 					"depreciation_entry": d.voucher_no,
 				}
@@ -119,7 +114,8 @@ def get_assets_details(assets):
 
 	fields = [
 		"name as asset",
-		"gross_purchase_amount",
+		"asset_name",
+		"net_purchase_amount",
 		"opening_accumulated_depreciation",
 		"asset_category",
 		"status",
@@ -144,6 +140,12 @@ def get_columns():
 			"width": 120,
 		},
 		{
+			"label": _("Asset Name"),
+			"fieldname": "asset_name",
+			"fieldtype": "Data",
+			"width": 140,
+		},
+		{
 			"label": _("Depreciation Date"),
 			"fieldname": "depreciation_date",
 			"fieldtype": "Date",
@@ -151,7 +153,7 @@ def get_columns():
 		},
 		{
 			"label": _("Purchase Amount"),
-			"fieldname": "gross_purchase_amount",
+			"fieldname": "net_purchase_amount",
 			"fieldtype": "Currency",
 			"width": 120,
 		},

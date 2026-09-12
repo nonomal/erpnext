@@ -2,6 +2,16 @@
 // For license information, please see license.txt
 
 frappe.ui.form.on("Routing", {
+	setup: function (frm) {
+		frm.set_query("bom_no", "operations", function () {
+			return {
+				filters: {
+					is_phantom_bom: 0,
+				},
+			};
+		});
+	},
+
 	refresh: function (frm) {
 		frm.trigger("display_sequence_id_column");
 	},
@@ -66,6 +76,11 @@ frappe.ui.form.on("BOM Operation", {
 	},
 
 	time_in_mins: function (frm, cdt, cdn) {
+		const d = locals[cdt][cdn];
+		frm.events.calculate_operating_cost(frm, d);
+	},
+
+	hour_rate: function (frm, cdt, cdn) {
 		const d = locals[cdt][cdn];
 		frm.events.calculate_operating_cost(frm, d);
 	},

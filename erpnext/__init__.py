@@ -3,10 +3,8 @@ import inspect
 from typing import TypeVar
 
 import frappe
-from frappe.model.document import Document
-from frappe.utils.user import is_website_user
 
-__version__ = "16.0.0-dev"
+__version__ = "17.0.0-dev"
 
 
 def get_default_company(user=None):
@@ -57,7 +55,7 @@ def get_company_currency(company):
 
 def set_perpetual_inventory(enable=1, company=None):
 	if not company:
-		company = "_Test Company" if frappe.flags.in_test else get_default_company()
+		company = "_Test Company" if frappe.in_test else get_default_company()
 
 	company = frappe.get_doc("Company", company)
 	company.enable_perpetual_inventory = enable
@@ -77,7 +75,7 @@ def encode_company_abbr(name, company=None, abbr=None):
 
 def is_perpetual_inventory_enabled(company):
 	if not company:
-		company = "_Test Company" if frappe.flags.in_test else get_default_company()
+		company = "_Test Company" if frappe.in_test else get_default_company()
 
 	if not hasattr(frappe.local, "enable_perpetual_inventory"):
 		frappe.local.enable_perpetual_inventory = {}
@@ -155,6 +153,8 @@ def allow_regional(fn):
 
 
 def check_app_permission():
+	from frappe.utils.user import is_website_user
+
 	if frappe.session.user == "Administrator":
 		return True
 
@@ -175,9 +175,16 @@ def normalize_ctx_input(T: type) -> callable:
 	- Casting the result to the specified type T
 	"""
 
+	from frappe.model.document import Document
+
 	def decorator(func: callable):
 		# conserve annotations for frappe.utils.typing_validations
-		@functools.wraps(func, assigned=(a for a in functools.WRAPPER_ASSIGNMENTS if a != "__annotations__"))
+		@functools.wraps(
+			func,
+			assigned=(
+				a for a in functools.WRAPPER_ASSIGNMENTS if a not in ("__annotations__", "__annotate__")
+			),
+		)
 		def wrapper(ctx: T | Document | dict | str, *args, **kwargs):
 			if isinstance(ctx, Document):
 				ctx = T(**ctx.as_dict())

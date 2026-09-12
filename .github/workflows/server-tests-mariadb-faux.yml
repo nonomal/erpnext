@@ -7,8 +7,16 @@ on:
     paths:
       - "**.js"
       - "**.css"
+      - "**.svg"
       - "**.md"
       - "**.html"
+      - 'crowdin.yml'
+      - '.coderabbit.yml'
+      - '.mergify.yml'
+      - '**.po'
+
+permissions:
+  contents: read
 
 jobs:
   test:

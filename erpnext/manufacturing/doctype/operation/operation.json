@@ -20,7 +20,8 @@
   "sub_operations",
   "total_operation_time",
   "section_break_4",
-  "description"
+  "description",
+  "work_instruction"
  ],
  "fields": [
   {
@@ -42,6 +43,12 @@
    "fieldtype": "Text",
    "in_preview": 1,
    "label": "Description"
+  },
+  {
+   "description": "Shown to operators on the Shop Floor. Supports rich text and embedded images for step-by-step guidance.",
+   "fieldname": "work_instruction",
+   "fieldtype": "Text Editor",
+   "label": "Work Instructions"
   },
   {
    "collapsible": 1,
@@ -71,7 +78,8 @@
    "fieldname": "batch_size",
    "fieldtype": "Int",
    "label": "Batch Size",
-   "mandatory_depends_on": "create_job_card_based_on_batch_size"
+   "mandatory_depends_on": "create_job_card_based_on_batch_size",
+   "non_negative": 1
   },
   {
    "default": "0",
@@ -105,7 +113,7 @@
  "icon": "fa fa-wrench",
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2024-05-26 17:59:44.338741",
+ "modified": "2025-08-04 16:14:57.659318",
  "modified_by": "Administrator",
  "module": "Manufacturing",
  "name": "Operation",
@@ -135,6 +143,7 @@
   }
  ],
  "quick_entry": 1,
+ "row_format": "Dynamic",
  "show_preview_popup": 1,
  "sort_field": "creation",
  "sort_order": "DESC",

@@ -1,4 +1,5 @@
 import frappe
+from frappe import _
 from frappe.query_builder.custom import ConstantColumn
 from frappe.query_builder.functions import Sum
 from frappe.utils import flt, formatdate, get_datetime_str, get_table_name
@@ -14,6 +15,19 @@ from erpnext.accounts.party import get_party_account
 from erpnext.setup.utils import get_exchange_rate
 
 __exchange_rates = {}
+
+
+def validate_mandatory_date_range(filters, from_field="from_date", to_field="to_date"):
+	from_date = filters.get(from_field)
+	to_date = filters.get(to_field)
+
+	if not from_date or not to_date:
+		frappe.throw(
+			_("{0} and {1} are mandatory").format(frappe.bold(_("From Date")), frappe.bold(_("To Date")))
+		)
+
+	if from_date > to_date:
+		frappe.throw(_("From Date must be before To Date"))
 
 
 def get_currency(filters):
@@ -86,7 +100,7 @@ def get_rate_as_at(date, from_currency, to_currency):
 	return rate
 
 
-def convert_to_presentation_currency(gl_entries, currency_info):
+def convert_to_presentation_currency(gl_entries, currency_info, filters=None):
 	"""
 	Take a list of GL Entries and change the 'debit' and 'credit' values to currencies
 	in `currency_info`.
@@ -99,6 +113,13 @@ def convert_to_presentation_currency(gl_entries, currency_info):
 	company_currency = currency_info["company_currency"]
 
 	account_currencies = list(set(entry["account_currency"] for entry in gl_entries))
+	exchange_gain_or_loss = False
+
+	if filters and isinstance(filters.get("account"), list):
+		account_filter = filters.get("account")
+		gain_loss_account = frappe.db.get_value("Company", filters.company, "exchange_gain_loss_account")
+
+		exchange_gain_or_loss = len(account_filter) == 1 and account_filter[0] == gain_loss_account
 
 	for entry in gl_entries:
 		debit = flt(entry["debit"])
@@ -107,7 +128,11 @@ def convert_to_presentation_currency(gl_entries, currency_info):
 		credit_in_account_currency = flt(entry["credit_in_account_currency"])
 		account_currency = entry["account_currency"]
 
-		if len(account_currencies) == 1 and account_currency == presentation_currency:
+		if (
+			len(account_currencies) == 1
+			and account_currency == presentation_currency
+			and not exchange_gain_or_loss
+		) and not (filters and filters.get("show_amount_in_company_currency")):
 			entry["debit"] = debit_in_account_currency
 			entry["credit"] = credit_in_account_currency
 		else:
@@ -135,8 +160,12 @@ def get_appropriate_company(filters):
 	return company
 
 
-@frappe.whitelist()
-def get_invoiced_item_gross_margin(sales_invoice=None, item_code=None, company=None, with_item_data=False):
+def get_invoiced_item_gross_margin(
+	sales_invoice: str | None = None,
+	item_code: str | None = None,
+	company: str | None = None,
+	with_item_data: bool = False,
+):
 	from erpnext.accounts.report.gross_profit.gross_profit import GrossProfitGenerator
 
 	sales_invoice = sales_invoice or frappe.form_dict.get("sales_invoice")
@@ -280,6 +309,9 @@ def get_payment_entries(filters, args):
 			pe.mode_of_payment,
 			pe.project,
 			pe.cost_center,
+			pe.payment_type,
+			pe.source_exchange_rate,
+			pe.target_exchange_rate,
 		)
 		.where(
 			(pe.docstatus == 1)
@@ -290,6 +322,22 @@ def get_payment_entries(filters, args):
 	)
 	query = apply_common_conditions(filters, query, doctype="Payment Entry", payments=True)
 	payment_entries = query.run(as_dict=True)
+
+	if payment_entries:
+		ded = frappe.qb.DocType("Payment Entry Deduction")
+		deduction_totals = frappe._dict(
+			frappe.qb.from_(ded)
+			.select(ded.parent, Sum(ded.amount))
+			.where(ded.parent.isin([d.name for d in payment_entries]) & (ded.is_exchange_gain_loss == 0))
+			.groupby(ded.parent)
+			.run()
+		)
+		for d in payment_entries:
+			exchange_rate = (
+				d.source_exchange_rate if d.payment_type == "Receive" else d.target_exchange_rate
+			) or 1
+			d.base_grand_total = flt(d.base_grand_total) + flt(deduction_totals.get(d.name)) / exchange_rate
+
 	return payment_entries
 
 

@@ -2,14 +2,13 @@
 # See license.txt
 
 import frappe
-from frappe.tests import IntegrationTestCase, UnitTestCase
-from frappe.utils import cstr, date_diff, flt, getdate
+from frappe.utils import cstr, flt, getdate
 
 from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
 from erpnext.assets.doctype.asset.depreciation import (
 	post_depreciation_entries,
 )
-from erpnext.assets.doctype.asset.test_asset import create_asset, create_asset_data
+from erpnext.assets.doctype.asset.test_asset import create_asset
 from erpnext.assets.doctype.asset_depreciation_schedule.asset_depreciation_schedule import (
 	get_asset_depr_schedule_doc,
 	get_depr_schedule,
@@ -18,21 +17,10 @@ from erpnext.assets.doctype.asset_repair.test_asset_repair import create_asset_r
 from erpnext.assets.doctype.asset_value_adjustment.test_asset_value_adjustment import (
 	make_asset_value_adjustment,
 )
+from erpnext.tests.utils import ERPNextTestSuite
 
 
-class UnitTestAssetDepreciationSchedule(UnitTestCase):
-	"""
-	Unit tests for AssetDepreciationSchedule.
-	Use this class for testing individual functions and methods.
-	"""
-
-	pass
-
-
-class TestAssetDepreciationSchedule(IntegrationTestCase):
-	def setUp(self):
-		create_asset_data()
-
+class TestAssetDepreciationSchedule(ERPNextTestSuite):
 	def test_throw_error_if_another_asset_depr_schedule_exist(self):
 		asset = create_asset(item_code="Macbook Pro", calculate_depreciation=1, submit=1)
 
@@ -96,13 +84,13 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 			calculate_depreciation=1,
 			depreciation_method="Straight Line",
 			available_for_use_date="2023-10-10",
-			is_existing_asset=1,
+			asset_type="Existing Asset",
 			opening_number_of_booked_depreciations=9,
 			opening_accumulated_depreciation=265,
 			depreciation_start_date="2024-07-31",
 			total_number_of_depreciations=24,
 			frequency_of_depreciation=1,
-			gross_purchase_amount=731,
+			net_purchase_amount=731,
 			daily_prorata_based=1,
 		)
 
@@ -136,13 +124,13 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 			calculate_depreciation=1,
 			depreciation_method="Straight Line",
 			available_for_use_date="2023-10-10",
-			is_existing_asset=1,
+			asset_type="Existing Asset",
 			opening_number_of_booked_depreciations=9,
 			opening_accumulated_depreciation=265.30,
 			depreciation_start_date="2024-07-31",
 			total_number_of_depreciations=24,
 			frequency_of_depreciation=1,
-			gross_purchase_amount=731,
+			net_purchase_amount=731,
 		)
 
 		expected_schedules = [
@@ -174,13 +162,13 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 			calculate_depreciation=1,
 			depreciation_method="Straight Line",
 			available_for_use_date="2023-11-01",
-			is_existing_asset=1,
+			asset_type="Existing Asset",
 			opening_number_of_booked_depreciations=4,
 			opening_accumulated_depreciation=223.15,
 			depreciation_start_date="2024-12-31",
 			total_number_of_depreciations=12,
 			frequency_of_depreciation=3,
-			gross_purchase_amount=731,
+			net_purchase_amount=731,
 		)
 
 		expected_schedules = [
@@ -208,7 +196,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 			calculate_depreciation=1,
 			depreciation_method="Straight Line",
 			daily_prorata_based=1,
-			gross_purchase_amount=1096,
+			net_purchase_amount=1096,
 			available_for_use_date="2020-01-15",
 			depreciation_start_date="2020-01-31",
 			frequency_of_depreciation=1,
@@ -386,7 +374,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 	def test_depreciation_schedule_after_cancelling_asset_repair(self):
 		asset = create_asset(
 			item_code="Macbook Pro",
-			gross_purchase_amount=500,
+			net_purchase_amount=500,
 			calculate_depreciation=1,
 			depreciation_method="Straight Line",
 			available_for_use_date="2023-01-01",
@@ -466,7 +454,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 	def test_depreciation_schedule_after_cancelling_asset_repair_for_6_months_frequency(self):
 		asset = create_asset(
 			item_code="Macbook Pro",
-			gross_purchase_amount=500,
+			net_purchase_amount=500,
 			calculate_depreciation=1,
 			depreciation_method="Straight Line",
 			available_for_use_date="2023-01-01",
@@ -531,14 +519,14 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 	def test_depreciation_schedule_after_cancelling_asset_repair_for_existing_asset(self):
 		asset = create_asset(
 			item_code="Macbook Pro",
-			gross_purchase_amount=500,
+			net_purchase_amount=500,
 			calculate_depreciation=1,
 			depreciation_method="Straight Line",
 			available_for_use_date="2023-01-15",
 			depreciation_start_date="2023-03-31",
 			frequency_of_depreciation=1,
 			total_number_of_depreciations=12,
-			is_existing_asset=1,
+			asset_type="Existing Asset",
 			opening_accumulated_depreciation=64.52,
 			opening_number_of_booked_depreciations=2,
 			submit=1,
@@ -610,7 +598,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 	def test_wdv_depreciation_schedule_after_cancelling_asset_repair(self):
 		asset = create_asset(
 			item_code="Macbook Pro",
-			gross_purchase_amount=500,
+			net_purchase_amount=500,
 			calculate_depreciation=1,
 			depreciation_method="Written Down Value",
 			available_for_use_date="2023-04-01",
@@ -668,10 +656,10 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 
 		self.assertEqual(schedules, expected_depreciation_before_repair)
 
-	def test_daily_prorata_based_depreciation_schedule_after_cancelling_asset_repair_for(self):
+	def test_daily_prorata_based_depreciation_schedule_after_cancelling_asset_repair(self):
 		asset = create_asset(
 			item_code="Macbook Pro",
-			gross_purchase_amount=500,
+			net_purchase_amount=500,
 			calculate_depreciation=1,
 			depreciation_method="Straight Line",
 			available_for_use_date="2023-01-01",
@@ -751,7 +739,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 	def test_depreciation_schedule_after_cancelling_asset_value_adjustent(self):
 		asset = create_asset(
 			item_code="Macbook Pro",
-			gross_purchase_amount=1000,
+			net_purchase_amount=1000,
 			calculate_depreciation=1,
 			depreciation_method="Straight Line",
 			available_for_use_date="2023-01-01",
@@ -783,7 +771,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 
 		current_asset_value = asset.finance_books[0].value_after_depreciation
 		asset_value_adjustment = make_asset_value_adjustment(
-			asset=asset,
+			asset=asset.name,
 			date="2023-04-01",
 			current_asset_value=current_asset_value,
 			new_asset_value=1200,
@@ -824,7 +812,6 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 	def test_depreciation_on_return_of_sold_asset(self):
 		from erpnext.controllers.sales_and_purchase_return import make_return_doc
 
-		create_asset_data()
 		asset = create_asset(item_code="Macbook Pro", calculate_depreciation=1, submit=1)
 		post_depreciation_entries(getdate("2021-09-30"))
 
@@ -853,14 +840,14 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 	def test_depreciation_schedule_after_cancelling_asset_value_adjustent_for_existing_asset(self):
 		asset = create_asset(
 			item_code="Macbook Pro",
-			gross_purchase_amount=500,
+			net_purchase_amount=500,
 			calculate_depreciation=1,
 			depreciation_method="Straight Line",
 			available_for_use_date="2023-01-15",
 			depreciation_start_date="2023-03-31",
 			frequency_of_depreciation=1,
 			total_number_of_depreciations=12,
-			is_existing_asset=1,
+			asset_type="Existing Asset",
 			opening_accumulated_depreciation=64.52,
 			opening_number_of_booked_depreciations=2,
 			submit=1,
@@ -888,7 +875,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 
 		current_asset_value = asset.finance_books[0].value_after_depreciation
 		asset_value_adjustment = make_asset_value_adjustment(
-			asset=asset,
+			asset=asset.name,
 			date="2023-04-01",
 			current_asset_value=current_asset_value,
 			new_asset_value=600,
@@ -927,14 +914,14 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 	def test_depreciation_schedule_for_parallel_adjustment_and_repair(self):
 		asset = create_asset(
 			item_code="Macbook Pro",
-			gross_purchase_amount=600,
+			net_purchase_amount=600,
 			calculate_depreciation=1,
 			depreciation_method="Straight Line",
 			available_for_use_date="2021-01-01",
 			depreciation_start_date="2021-12-31",
 			frequency_of_depreciation=12,
 			total_number_of_depreciations=3,
-			is_existing_asset=1,
+			asset_type="Existing Asset",
 			submit=1,
 		)
 		post_depreciation_entries(date="2021-12-31")
@@ -954,7 +941,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 
 		current_asset_value = asset.finance_books[0].value_after_depreciation
 		asset_value_adjustment = make_asset_value_adjustment(
-			asset=asset,
+			asset=asset.name,
 			date="2022-01-15",
 			current_asset_value=current_asset_value,
 			new_asset_value=500,
@@ -1016,14 +1003,14 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 	def test_depreciation_schedule_after_sale_of_asset(self):
 		asset = create_asset(
 			item_code="Macbook Pro",
-			gross_purchase_amount=600,
+			net_purchase_amount=600,
 			calculate_depreciation=1,
 			depreciation_method="Straight Line",
 			available_for_use_date="2021-01-01",
 			depreciation_start_date="2021-12-31",
 			frequency_of_depreciation=12,
 			total_number_of_depreciations=3,
-			is_existing_asset=1,
+			asset_type="Existing Asset",
 			submit=1,
 		)
 		post_depreciation_entries(date="2021-12-31")
@@ -1043,7 +1030,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 
 		current_asset_value = asset.finance_books[0].value_after_depreciation
 		asset_value_adjustment = make_asset_value_adjustment(
-			asset=asset,
+			asset=asset.name,
 			date="2022-01-15",
 			current_asset_value=current_asset_value,
 			new_asset_value=500,
@@ -1094,7 +1081,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 	def test_depreciation_schedule_after_sale_of_asset_wdv_method(self):
 		asset = create_asset(
 			item_code="Macbook Pro",
-			gross_purchase_amount=500,
+			net_purchase_amount=500,
 			calculate_depreciation=1,
 			depreciation_method="Written Down Value",
 			available_for_use_date="2021-01-01",
@@ -1102,7 +1089,7 @@ class TestAssetDepreciationSchedule(IntegrationTestCase):
 			rate_of_depreciation=50,
 			frequency_of_depreciation=12,
 			total_number_of_depreciations=3,
-			is_existing_asset=1,
+			asset_type="Existing Asset",
 			submit=1,
 		)
 		post_depreciation_entries(date="2021-12-31")

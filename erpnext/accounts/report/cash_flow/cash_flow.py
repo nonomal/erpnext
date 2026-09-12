@@ -2,16 +2,32 @@
 # For license information, please see license.txt
 
 
+from datetime import timedelta
+
 import frappe
 from frappe import _
-from frappe.utils import cstr
+from frappe.query_builder import DocType
+from frappe.query_builder.functions import Sum
+from frappe.utils import cstr, flt
+from pypika import Order
+from pypika.terms import Bracket, LiteralValue
 
+from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import (
+	get_accounting_dimensions,
+	get_dimension_with_children,
+)
+from erpnext.accounts.doctype.financial_report_template.financial_report_engine import (
+	FinancialReportEngine,
+	get_xlsx_styles,  #! DO NOT REMOVE - hook for styling
+)
 from erpnext.accounts.report.financial_statements import (
+	build_period_list,
 	get_columns,
 	get_cost_centers_with_children,
 	get_data,
 	get_filtered_list_for_consolidated_report,
-	get_period_list,
+	is_dimension_grouped,
+	set_gl_entries_by_account,
 )
 from erpnext.accounts.report.profit_and_loss_statement.profit_and_loss_statement import (
 	get_net_profit_loss,
@@ -20,15 +36,13 @@ from erpnext.accounts.utils import get_fiscal_year
 
 
 def execute(filters=None):
-	period_list = get_period_list(
-		filters.from_fiscal_year,
-		filters.to_fiscal_year,
-		filters.period_start_date,
-		filters.period_end_date,
-		filters.filter_based_on,
-		filters.periodicity,
-		company=filters.company,
-	)
+	if filters and filters.report_template:
+		return FinancialReportEngine().execute(filters)
+
+	period_list = build_period_list(filters)
+
+	if not period_list:
+		return
 
 	cash_flow_sections = get_cash_flow_accounts()
 
@@ -54,7 +68,13 @@ def execute(filters=None):
 		ignore_accumulated_values_for_fy=True,
 	)
 
-	net_profit_loss = get_net_profit_loss(income, expense, period_list, filters.company)
+	net_profit_loss = get_net_profit_loss(
+		income,
+		expense,
+		period_list,
+		filters.company,
+		accumulated_values=bool(filters.accumulated_values),
+	)
 
 	data = []
 	summary_data = {}
@@ -68,6 +88,7 @@ def execute(filters=None):
 				"parent_section": None,
 				"indent": 0.0,
 				"section": cash_flow_section["section_header"],
+				"currency": company_currency,
 			}
 		)
 
@@ -75,7 +96,11 @@ def execute(filters=None):
 			# add first net income in operations section
 			if net_profit_loss:
 				net_profit_loss.update(
-					{"indent": 1, "parent_section": cash_flow_sections[0]["section_header"]}
+					{
+						"indent": 1,
+						"parent_section": cash_flow_sections[0]["section_header"],
+						"section": net_profit_loss["account"],
+					}
 				)
 				data.append(net_profit_loss)
 				section_data.append(net_profit_loss)
@@ -89,6 +114,7 @@ def execute(filters=None):
 				filters={
 					"account_type": row["account_type"],
 					"is_group": 0,
+					"company": filters.company,
 				},
 				pluck="name",
 			)
@@ -115,12 +141,37 @@ def execute(filters=None):
 			filters,
 		)
 
-	add_total_row_account(
-		data, data, _("Net Change in Cash"), period_list, company_currency, summary_data, filters
+	net_change_in_cash = add_total_row_account(
+		data,
+		data,
+		_("Net Change in Cash"),
+		period_list,
+		company_currency,
+		summary_data,
+		filters,
+		add_blank_row=False,
 	)
-	columns = get_columns(filters.periodicity, period_list, filters.accumulated_values, filters.company, True)
 
-	chart = get_chart_data(columns, data, company_currency)
+	if filters.show_opening_and_closing_balance and not is_dimension_grouped(period_list):
+		show_opening_and_closing_balance(data, period_list, company_currency, net_change_in_cash, filters)
+	elif filters.show_opening_and_closing_balance:
+		filters.show_opening_and_closing_balance = False
+
+		frappe.msgprint(
+			indicator="orange",
+			title=_("Not Supported"),
+			msg=_("Opening and Closing balance is not supported for dimension grouped cash flow statement"),
+		)
+
+	columns = get_columns(
+		filters.periodicity,
+		period_list,
+		filters.accumulated_values,
+		filters.company,
+		True,
+	)
+
+	chart = get_chart_data(period_list, data, company_currency)
 
 	report_summary = get_report_summary(summary_data, company_currency)
 
@@ -166,6 +217,8 @@ def get_account_type_based_data(company, account_type, period_list, accumulated_
 		filters.start_date = start_date
 		filters.end_date = period["to_date"]
 		filters.account_type = account_type
+		filters.dimension_field = period.get("dimension_field")
+		filters.dimension_value = period.get("dimension_value")
 
 		amount = get_account_type_based_gl_data(company, filters)
 
@@ -180,37 +233,73 @@ def get_account_type_based_data(company, account_type, period_list, accumulated_
 
 
 def get_account_type_based_gl_data(company, filters=None):
-	cond = ""
 	filters = frappe._dict(filters or {})
 
-	if filters.include_default_book_entries:
-		company_fb = frappe.get_cached_value("Company", company, "default_finance_book")
-		cond = """ AND (finance_book in ({}, {}, '') OR finance_book IS NULL)
-			""".format(
-			frappe.db.escape(filters.finance_book),
-			frappe.db.escape(company_fb),
-		)
-	else:
-		cond = " AND (finance_book in (%s, '') OR finance_book IS NULL)" % (
-			frappe.db.escape(cstr(filters.finance_book))
-		)
+	gl = frappe.qb.DocType("GL Entry")
+	acc = frappe.qb.DocType("Account")
 
-	if filters.get("cost_center"):
-		filters.cost_center = get_cost_centers_with_children(filters.cost_center)
-		cond += " and cost_center in %(cost_center)s"
-
-	gl_sum = frappe.db.sql_list(
-		f"""
-		select sum(credit) - sum(debit)
-		from `tabGL Entry`
-		where company=%(company)s and posting_date >= %(start_date)s and posting_date <= %(end_date)s
-			and voucher_type != 'Period Closing Voucher'
-			and account in ( SELECT name FROM tabAccount WHERE account_type = %(account_type)s) {cond}
-	""",
-		filters,
+	query = (
+		frappe.qb.from_(gl)
+		.select(Sum(gl.credit) - Sum(gl.debit))
+		.where(gl.company == company)
+		.where(gl.posting_date >= filters.start_date)
+		.where(gl.posting_date <= filters.end_date)
+		.where(gl.voucher_type != "Period Closing Voucher")
+		.where(
+			gl.account.isin(
+				frappe.qb.from_(acc)
+				.select(acc.name)
+				.where(acc.is_group == 0)
+				.where(acc.company == company)
+				.where(acc.account_type == filters.account_type)
+			)
+		)
 	)
 
-	return gl_sum[0] if gl_sum and gl_sum[0] else 0
+	# finance book
+	if filters.include_default_book_entries:
+		company_fb = frappe.get_cached_value("Company", company, "default_finance_book")
+		query = query.where(
+			(gl.finance_book.isin([cstr(filters.finance_book), cstr(company_fb), ""]))
+			| (gl.finance_book.isnull())
+		)
+	else:
+		query = query.where(
+			(gl.finance_book.isin([cstr(filters.finance_book), ""])) | (gl.finance_book.isnull())
+		)
+
+	# cost center (with children)
+	if filters.get("cost_center"):
+		cost_centers = get_cost_centers_with_children(filters.cost_center)
+		query = query.where(gl.cost_center.isin(cost_centers))
+
+	# project
+	if filters.get("project"):
+		projects = filters.project
+		if not isinstance(projects, list):
+			projects = frappe.parse_json(projects)
+		query = query.where(gl.project.isin(projects))
+
+	# per-period group-by-dimension filter (always a single exact value)
+	if filters.get("dimension_field") and filters.get("dimension_value"):
+		query = query.where(gl[filters.dimension_field] == filters.dimension_value)
+
+	# accounting dimension filters selected in the filter bar
+	for dimension in get_accounting_dimensions(as_list=False):
+		if filters.get(dimension.fieldname):
+			values = filters[dimension.fieldname]
+			if frappe.get_cached_value("DocType", dimension.document_type, "is_tree"):
+				values = get_dimension_with_children(dimension.document_type, values)
+			query = query.where(gl[dimension.fieldname].isin(values))
+
+	# apply permission filters
+	from frappe.desk.reportview import build_match_conditions
+
+	if match_conditions := build_match_conditions("GL Entry"):
+		query = query.where(Bracket(LiteralValue(match_conditions)))
+
+	result = query.run()
+	return flt(result[0][0]) if result and result[0][0] else 0
 
 
 def get_start_date(period, accumulated_values, company):
@@ -224,10 +313,24 @@ def get_start_date(period, accumulated_values, company):
 	return start_date
 
 
-def add_total_row_account(out, data, label, period_list, currency, summary_data, filters, consolidated=False):
+def add_total_row_account(
+	out,
+	data,
+	label,
+	period_list,
+	currency,
+	summary_data,
+	filters,
+	consolidated=False,
+	add_blank_row=True,
+):
+	name_key = "account" if consolidated else "section"
+	parent_key = "parent_account" if consolidated else "parent_section"
+	label_str = "'" + str(label) + "'"
+
 	total_row = {
-		"section_name": "'" + _("{0}").format(label) + "'",
-		"section": "'" + _("{0}").format(label) + "'",
+		f"{name_key}_name": label_str,
+		name_key: label_str,
 		"currency": currency,
 	}
 
@@ -238,40 +341,171 @@ def add_total_row_account(out, data, label, period_list, currency, summary_data,
 		period_list = get_filtered_list_for_consolidated_report(filters, period_list)
 
 	for row in data:
-		if row.get("parent_section"):
+		if row.get(parent_key):
 			for period in period_list:
 				key = period if consolidated else period["key"]
 				total_row.setdefault(key, 0.0)
 				total_row[key] += row.get(key, 0.0)
-				summary_data[label] += row.get(key)
+				summary_data[label] += row.get(key) or 0.0
 
 			total_row.setdefault("total", 0.0)
-			total_row["total"] += row["total"]
+			total_row["total"] += row.get("total", 0.0)
 
 	out.append(total_row)
-	out.append({})
+
+	if add_blank_row:
+		out.append({})
+
+	return total_row
+
+
+def show_opening_and_closing_balance(out, period_list, currency, net_change_in_cash, filters):
+	opening_balance = {
+		"section_name": "Opening",
+		"section": "Opening",
+		"currency": currency,
+	}
+	closing_balance = {
+		"section_name": "Closing (Opening + Total)",
+		"section": "Closing (Opening + Total)",
+		"currency": currency,
+	}
+
+	opening_amount = get_opening_balance(filters.company, period_list, filters) or 0.0
+	running_total = opening_amount
+
+	for i, period in enumerate(period_list):
+		key = period["key"]
+		change = net_change_in_cash.get(key, 0.0)
+
+		opening_balance[key] = opening_amount if i == 0 else running_total
+		running_total += change
+		closing_balance[key] = running_total
+
+	opening_balance["total"] = opening_balance[period_list[0]["key"]]
+	closing_balance["total"] = closing_balance[period_list[-1]["key"]]
+
+	out.extend([opening_balance, net_change_in_cash, closing_balance, {}])
+
+
+def get_opening_balance(company, period_list, filters):
+	from copy import deepcopy
+
+	cash_value = {}
+	account_types = get_cash_flow_accounts()
+	net_profit_loss = 0.0
+
+	local_filters = deepcopy(filters)
+	local_filters.start_date, local_filters.end_date = get_opening_range_using_fiscal_year(
+		company, period_list
+	)
+
+	for section in account_types:
+		section_name = section.get("section_name")
+		cash_value.setdefault(section_name, 0.0)
+
+		if section_name == "Operations":
+			net_profit_loss += get_net_income(company, period_list, local_filters)
+
+		for account in section.get("account_types", []):
+			account_type = account.get("account_type")
+			local_filters.account_type = account_type
+
+			amount = get_account_type_based_gl_data(company, local_filters) or 0.0
+
+			if account_type == "Depreciation":
+				cash_value[section_name] += amount * -1
+			else:
+				cash_value[section_name] += amount
+
+	return sum(cash_value.values()) + net_profit_loss
+
+
+def get_net_income(company, period_list, filters):
+	gl_entries_by_account_for_income, gl_entries_by_account_for_expense = {}, {}
+	income, expense = 0.0, 0.0
+	from_date, to_date = get_opening_range_using_fiscal_year(company, period_list)
+
+	for root_type in ["Income", "Expense"]:
+		for root in frappe.get_all(
+			"Account",
+			filters={"root_type": root_type, "parent_account": ["is", "not set"]},
+			fields=["lft", "rgt"],
+		):
+			set_gl_entries_by_account(
+				company,
+				from_date,
+				to_date,
+				filters,
+				gl_entries_by_account_for_income
+				if root_type == "Income"
+				else gl_entries_by_account_for_expense,
+				root.lft,
+				root.rgt,
+				root_type=root_type,
+				ignore_closing_entries=True,
+			)
+
+	for entries in gl_entries_by_account_for_income.values():
+		for entry in entries:
+			if entry.posting_date <= to_date:
+				amount = (entry.debit - entry.credit) * -1
+				income = flt((income + amount), 2)
+
+	for entries in gl_entries_by_account_for_expense.values():
+		for entry in entries:
+			if entry.posting_date <= to_date:
+				amount = entry.debit - entry.credit
+				expense = flt((expense + amount), 2)
+
+	return income - expense
+
+
+def get_opening_range_using_fiscal_year(company, period_list):
+	first_from_date = period_list[0]["from_date"]
+	previous_day = first_from_date - timedelta(days=1)
+
+	# Get the earliest fiscal year for the company
+
+	FiscalYear = DocType("Fiscal Year")
+	FiscalYearCompany = DocType("Fiscal Year Company")
+
+	earliest_fy = (
+		frappe.qb.from_(FiscalYear)
+		.join(FiscalYearCompany)
+		.on(FiscalYearCompany.parent == FiscalYear.name)
+		.select(FiscalYear.year_start_date)
+		.where(FiscalYearCompany.company == company)
+		.orderby(FiscalYear.year_start_date, order=Order.asc)
+		.limit(1)
+	).run(as_dict=True)
+
+	if not earliest_fy:
+		frappe.throw(_("Not able to find the earliest Fiscal Year for the given company."))
+
+	company_start_date = earliest_fy[0]["year_start_date"]
+	return company_start_date, previous_day
 
 
 def get_report_summary(summary_data, currency):
 	report_summary = []
-
 	for label, value in summary_data.items():
 		report_summary.append({"value": value, "label": label, "datatype": "Currency", "currency": currency})
 
 	return report_summary
 
 
-def get_chart_data(columns, data, currency):
-	labels = [d.get("label") for d in columns[2:]]
+def get_chart_data(period_list, data, currency):
+	labels = [period.get("label") for period in period_list]
 	datasets = [
 		{
 			"name": section.get("section").replace("'", ""),
-			"values": [section.get(d.get("fieldname")) for d in columns[2:]],
+			"values": [section.get(period.get("key")) for period in period_list],
 		}
 		for section in data
 		if section.get("parent_section") is None and section.get("currency")
 	]
-	datasets = datasets[:-1]
+	datasets = datasets[:-2]
 
 	chart = {"data": {"labels": labels, "datasets": datasets}, "type": "bar"}
 

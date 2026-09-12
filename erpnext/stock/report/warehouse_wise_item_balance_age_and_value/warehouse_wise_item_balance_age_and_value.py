@@ -7,6 +7,7 @@
 
 import frappe
 from frappe import _
+from frappe.query_builder import Criterion
 from frappe.query_builder.functions import Count
 from frappe.utils import cint, flt, getdate
 
@@ -106,13 +107,17 @@ def get_columns(filters):
 
 def validate_filters(filters):
 	if not (filters.get("item_code") or filters.get("warehouse")):
-		sle_count = flt(frappe.qb.from_("Stock Ledger Entry").select(Count("name")).run()[0][0])
+		table = frappe.qb.DocType("Stock Ledger Entry")
+		sle_count = flt(
+			frappe.qb.from_(table).select(Count(table.name)).where(table.is_cancelled == 0).run()[0][0]
+		)
 		if sle_count > 500000:
 			frappe.throw(_("Please set filter based on Item or Warehouse"))
 
 
 def get_warehouse_list(filters):
-	if not filters.get("warehouse"):
+	warehouses = filters.get("warehouse")
+	if not warehouses:
 		return frappe.get_all(
 			"Warehouse",
 			filters={"company": filters.get("company"), "is_group": 0},
@@ -120,13 +125,22 @@ def get_warehouse_list(filters):
 			order_by="name",
 		)
 
+	if isinstance(warehouses, str):
+		warehouses = [warehouses]
+
+	# columns cover every selected warehouse along with its descendants
+	subtrees = frappe.get_all("Warehouse", filters={"name": ("in", warehouses)}, fields=["lft", "rgt"])
+	if not subtrees:
+		return []
+
 	warehouse = frappe.qb.DocType("Warehouse")
-	lft, rgt = frappe.db.get_value("Warehouse", filters.get("warehouse"), ["lft", "rgt"])
+	condition = Criterion.any([(warehouse.lft >= row.lft) & (warehouse.rgt <= row.rgt) for row in subtrees])
 
 	return (
 		frappe.qb.from_(warehouse)
-		.select("name")
-		.where((warehouse.lft >= lft) & (warehouse.rgt <= rgt))
+		.select(warehouse.name)
+		.where(condition)
+		.orderby(warehouse.name)
 		.run(as_dict=True)
 	)
 

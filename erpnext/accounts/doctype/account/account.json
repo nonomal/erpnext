@@ -21,6 +21,7 @@
   "account_currency",
   "column_break1",
   "parent_account",
+  "account_category",
   "account_type",
   "tax_rate",
   "freeze_account",
@@ -121,11 +122,12 @@
    "description": "Setting Account Type helps in selecting this Account in transactions.",
    "fieldname": "account_type",
    "fieldtype": "Select",
+   "in_preview": 1,
    "in_standard_filter": 1,
    "label": "Account Type",
    "oldfieldname": "account_type",
    "oldfieldtype": "Select",
-   "options": "\nAccumulated Depreciation\nAsset Received But Not Billed\nBank\nCash\nChargeable\nCapital Work in Progress\nCost of Goods Sold\nCurrent Asset\nCurrent Liability\nDepreciation\nDirect Expense\nDirect Income\nEquity\nExpense Account\nExpenses Included In Asset Valuation\nExpenses Included In Valuation\nFixed Asset\nIncome Account\nIndirect Expense\nIndirect Income\nLiability\nPayable\nReceivable\nRound Off\nRound Off for Opening\nStock\nStock Adjustment\nStock Received But Not Billed\nService Received But Not Billed\nTax\nTemporary",
+   "options": "\nAccumulated Depreciation\nAsset Received But Not Billed\nBank\nCash\nChargeable\nCapital Work in Progress\nCost of Goods Sold\nCurrent Asset\nCurrent Liability\nDepreciation\nDirect Expense\nDirect Income\nEquity\nExpense Account\nExpenses Included In Asset Valuation\nExpenses Included In Valuation\nFixed Asset\nIncome Account\nIndirect Expense\nIndirect Income\nLiability\nPayable\nReceivable\nRound Off\nRound Off for Opening\nStock\nStock Adjustment\nStock Received But Not Billed\nStock Delivered But Not Billed\nService Received But Not Billed\nTax\nTemporary",
    "search_index": 1
   },
   {
@@ -189,13 +191,20 @@
    "fieldname": "disabled",
    "fieldtype": "Check",
    "label": "Disable"
+  },
+  {
+   "description": "Used with Financial Report Template",
+   "fieldname": "account_category",
+   "fieldtype": "Link",
+   "label": "Account Category",
+   "options": "Account Category"
   }
  ],
  "icon": "fa fa-money",
  "idx": 1,
  "is_tree": 1,
  "links": [],
- "modified": "2025-01-22 10:40:35.766017",
+ "modified": "2026-09-03 12:59:42.190900",
  "modified_by": "Administrator",
  "module": "Accounts",
  "name": "Account",
@@ -248,8 +257,57 @@
    "role": "Accounts Manager",
    "share": 1,
    "write": 1
+  },
+  {
+   "role": "HR User",
+   "select": 1
+  },
+  {
+   "role": "HR Manager",
+   "select": 1
+  },
+  {
+   "role": "Delivery Manager",
+   "select": 1
+  },
+  {
+   "role": "Delivery User",
+   "select": 1
+  },
+  {
+   "role": "Maintenance Manager",
+   "select": 1
+  },
+  {
+   "role": "Maintenance User",
+   "select": 1
+  },
+  {
+   "role": "Manufacturing Manager",
+   "select": 1
+  },
+  {
+   "role": "Manufacturing User",
+   "select": 1
+  },
+  {
+   "role": "Purchase Master Manager",
+   "select": 1
+  },
+  {
+   "role": "Quality Manager",
+   "select": 1
+  },
+  {
+   "role": "Sales Master Manager",
+   "select": 1
+  },
+  {
+   "role": "Stock Manager",
+   "select": 1
   }
  ],
+ "row_format": "Dynamic",
  "search_fields": "account_number",
  "show_name_in_global_search": 1,
  "show_preview_popup": 1,

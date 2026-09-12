@@ -9,6 +9,7 @@ from frappe import _
 from frappe.utils import date_diff
 
 from erpnext.accounts.report.general_ledger.general_ledger import get_gl_entries
+from erpnext.accounts.report.utils import validate_mandatory_date_range
 
 Filters = frappe._dict
 Row = frappe._dict
@@ -34,8 +35,7 @@ def update_filters_with_account(filters: Filters) -> None:
 
 
 def validate_filters(filters: Filters) -> None:
-	if filters.from_date > filters.to_date:
-		frappe.throw(_("From Date must be before To Date"))
+	validate_mandatory_date_range(filters)
 
 
 def get_columns() -> Columns:
@@ -159,10 +159,11 @@ def assign_item_groups_to_svd_list(svd_list: SVDList) -> None:
 
 def get_item_groups_map(svd_list: SVDList) -> dict[str, str]:
 	item_codes = set(i["item_code"] for i in svd_list)
-	ig_list = frappe.get_list(
-		"Item", fields=["item_code", "item_group"], filters=[("item_code", "in", item_codes)]
+	return frappe._dict(
+		frappe.get_all(
+			"Item", fields=["name", "item_group"], filters=[("name", "in", item_codes)], as_list=True
+		)
 	)
-	return {i["item_code"]: i["item_group"] for i in ig_list}
 
 
 def get_item_groups_dict() -> ItemGroupsDict:
